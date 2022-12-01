@@ -9,6 +9,7 @@ use std::convert::From;
 use std::result;
 
 use logger::{error, IncMetric, METRICS};
+use rate_limiter::{RateLimiter, TokenType};
 pub use virtio_gen::virtio_blk::{
     VIRTIO_BLK_ID_BYTES, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_OK, VIRTIO_BLK_S_UNSUPP,
     VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID, VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT,
@@ -19,16 +20,15 @@ use super::super::DescriptorChain;
 use super::{io as block_io, Error, SECTOR_SHIFT};
 use crate::virtio::block::device::DiskProperties;
 use crate::virtio::SECTOR_SIZE;
-use rate_limiter::{RateLimiter, TokenType};
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum IoErr {
     GetId(GuestMemoryError),
     PartialTransfer { completed: u32, expected: u32 },
     FileEngine(block_io::Error),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestType {
     In,
     Out,
@@ -121,8 +121,8 @@ impl PendingRequest {
                 // Account for the status byte
                 num_bytes_to_mem + 1
             })
-            .unwrap_or_else(|e| {
-                error!("Failed to write virtio block status: {:?}", e);
+            .unwrap_or_else(|err| {
+                error!("Failed to write virtio block status: {:?}", err);
                 // If we can't write the status, discard the virtio descriptor
                 0
             });
@@ -188,7 +188,7 @@ pub struct RequestHeader {
     sector: u64,
 }
 
-// Safe because RequestHeader only contains plain data.
+// SAFETY: Safe because RequestHeader only contains plain data.
 unsafe impl ByteValued for RequestHeader {}
 
 impl RequestHeader {
@@ -213,7 +213,7 @@ impl RequestHeader {
     }
 }
 
-#[cfg_attr(test, derive(Debug, PartialEq))]
+#[cfg_attr(test, derive(Debug, PartialEq, Eq))]
 pub struct Request {
     pub r#type: RequestType,
     pub data_len: u32,
@@ -277,7 +277,8 @@ impl Request {
         // check request validity
         match req.r#type {
             RequestType::In | RequestType::Out => {
-                // Check that the data length is a multiple of 512 as specified in the virtio standard.
+                // Check that the data length is a multiple of 512 as specified in the virtio
+                // standard.
                 if u64::from(req.data_len) % SECTOR_SIZE != 0 {
                     return Err(Error::InvalidDataLength);
                 }
@@ -384,12 +385,12 @@ impl Request {
             Ok(block_io::FileEngineOk::Executed(res)) => {
                 ProcessingResult::Executed(res.user_data.finish(mem, Ok(res.count)))
             }
-            Err(e) => {
-                if e.error.is_throttling_err() {
+            Err(err) => {
+                if err.error.is_throttling_err() {
                     ProcessingResult::Throttled
                 } else {
                     ProcessingResult::Executed(
-                        e.user_data.finish(mem, Err(IoErr::FileEngine(e.error))),
+                        err.user_data.finish(mem, Err(IoErr::FileEngine(err.error))),
                     )
                 }
             }
@@ -399,11 +400,14 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #![allow(clippy::undocumented_unsafe_blocks)]
 
+    use vm_memory::test_utils::create_anon_guest_memory;
+    use vm_memory::{Address, GuestAddress, GuestMemory};
+
+    use super::*;
     use crate::virtio::queue::tests::*;
     use crate::virtio::test_utils::{VirtQueue, VirtqDesc};
-    use vm_memory::{test_utils::create_anon_guest_memory, Address, GuestAddress, GuestMemory};
 
     const NUM_DISK_SECTORS: u64 = 1024;
 
@@ -491,7 +495,8 @@ mod tests {
             let host_addr = self
                 .mem
                 .get_host_address(GuestAddress(self.mut_hdr_desc().addr.get()))
-                .unwrap() as *mut _;
+                .unwrap()
+                .cast();
             unsafe { &mut *host_addr }
         }
 
@@ -540,7 +545,7 @@ mod tests {
     #[test]
     fn test_parse_generic() {
         let mem = &create_anon_guest_memory(&[(GuestAddress(0), 0x10000)], false).unwrap();
-        let mut queue = RequestVirtQueue::new(GuestAddress(0), &mem);
+        let mut queue = RequestVirtQueue::new(GuestAddress(0), mem);
 
         // Write only request type descriptor.
         let request_header = RequestHeader::new(100, 114);
@@ -590,7 +595,7 @@ mod tests {
     #[test]
     fn test_parse_in() {
         let mem = &create_anon_guest_memory(&[(GuestAddress(0), 0x10000)], false).unwrap();
-        let mut queue = RequestVirtQueue::new(GuestAddress(0), &mem);
+        let mut queue = RequestVirtQueue::new(GuestAddress(0), mem);
 
         let request_header = RequestHeader::new(VIRTIO_BLK_T_IN, 99);
         queue.set_hdr_desc(0x1000, 0x1000, VIRTQ_DESC_F_NEXT, request_header);
@@ -621,7 +626,7 @@ mod tests {
     #[test]
     fn test_parse_out() {
         let mem = &create_anon_guest_memory(&[(GuestAddress(0), 0x10000)], false).unwrap();
-        let mut queue = RequestVirtQueue::new(GuestAddress(0), &mem);
+        let mut queue = RequestVirtQueue::new(GuestAddress(0), mem);
 
         let request_header = RequestHeader::new(VIRTIO_BLK_T_OUT, 100);
         queue.set_hdr_desc(0x1000, 0x1000, VIRTQ_DESC_F_NEXT, request_header);
@@ -649,7 +654,7 @@ mod tests {
     #[test]
     fn test_parse_flush() {
         let mem = &create_anon_guest_memory(&[(GuestAddress(0), 0x10000)], false).unwrap();
-        let mut queue = RequestVirtQueue::new(GuestAddress(0), &mem);
+        let mut queue = RequestVirtQueue::new(GuestAddress(0), mem);
 
         // Flush request with a data descriptor.
         let request_header = RequestHeader::new(VIRTIO_BLK_T_FLUSH, 50);
@@ -669,7 +674,7 @@ mod tests {
     #[test]
     fn test_parse_get_id() {
         let mem = &create_anon_guest_memory(&[(GuestAddress(0), 0x10000)], false).unwrap();
-        let mut queue = RequestVirtQueue::new(GuestAddress(0), &mem);
+        let mut queue = RequestVirtQueue::new(GuestAddress(0), mem);
 
         let request_header = RequestHeader::new(VIRTIO_BLK_T_GET_ID, 15);
         queue.set_hdr_desc(0x1000, 0x1000, VIRTQ_DESC_F_NEXT, request_header);
@@ -691,12 +696,13 @@ mod tests {
         queue.check_parse(true);
     }
 
+    use std::convert::TryInto;
+
     /// -------------------------------------
     /// BEGIN PROPERTY BASED TESTING
     use proptest::arbitrary::Arbitrary;
     use proptest::prelude::*;
     use proptest::strategy::{Map, Strategy, TupleUnion};
-    use std::convert::TryInto;
 
     // Implements a "strategy" for producing arbitrary values of RequestType.
     // This can also be generated by a derive macro from `proptest_derive`, but the crate
@@ -964,8 +970,8 @@ mod tests {
         ($expression:expr, $($pattern:tt)+) => {
             match $expression {
                 $($pattern)+ => (),
-                ref e =>  {
-                    println!("expected `{}` but got `{:?}`", stringify!($($pattern)+), e);
+                ref err =>  {
+                    println!("expected `{}` but got `{:?}`", stringify!($($pattern)+), err);
                     prop_assert!(false)
                 }
             }
@@ -979,16 +985,16 @@ mod tests {
             let result = Request::parse(&request.2.pop(&request.1).unwrap(), &request.1, NUM_DISK_SECTORS);
             match result {
                 Ok(r) => prop_assert!(r == request.0.unwrap()),
-                Err(e) => {
+                Err(err) => {
                     // Avoiding implementation of PartialEq which requires that even more types like
                     // GuestMemoryError implement it.
                     match request.0.unwrap_err() {
-                        Error::DescriptorChainTooShort => assert_err!(e, Error::DescriptorChainTooShort),
-                        Error::DescriptorLengthTooSmall => assert_err!(e, Error::DescriptorLengthTooSmall),
-                        Error::InvalidDataLength => assert_err!(e, Error::InvalidDataLength),
-                        Error::InvalidOffset => assert_err!(e, Error::InvalidOffset),
-                        Error::UnexpectedWriteOnlyDescriptor => assert_err!(e, Error::UnexpectedWriteOnlyDescriptor),
-                        Error::UnexpectedReadOnlyDescriptor => assert_err!(e, Error::UnexpectedReadOnlyDescriptor),
+                        Error::DescriptorChainTooShort => assert_err!(err, Error::DescriptorChainTooShort),
+                        Error::DescriptorLengthTooSmall => assert_err!(err, Error::DescriptorLengthTooSmall),
+                        Error::InvalidDataLength => assert_err!(err, Error::InvalidDataLength),
+                        Error::InvalidOffset => assert_err!(err, Error::InvalidOffset),
+                        Error::UnexpectedWriteOnlyDescriptor => assert_err!(err, Error::UnexpectedWriteOnlyDescriptor),
+                        Error::UnexpectedReadOnlyDescriptor => assert_err!(err, Error::UnexpectedReadOnlyDescriptor),
                         _ => unreachable!()
                     }
                 }

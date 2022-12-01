@@ -2,22 +2,21 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::convert::TryInto;
-use std::fmt;
-use std::result;
+use std::ops::Deref;
 use std::sync::{Arc, Mutex};
+use std::{fmt, result};
+
+use devices::virtio::net::TapError;
+use devices::virtio::Net;
+use serde::{Deserialize, Serialize};
+use utils::net::mac::MacAddr;
 
 use super::RateLimiterConfig;
 use crate::Error as VmmError;
-use devices::virtio::net::TapError;
-use devices::virtio::Net;
-use utils::net::mac::MacAddr;
-
-use serde::{Deserialize, Serialize};
-use std::ops::Deref;
 
 /// This struct represents the strongly typed equivalent of the json body from net iface
 /// related requests.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkInterfaceConfig {
     /// ID of the guest network interface.
@@ -48,7 +47,7 @@ impl From<&Net> for NetworkInterfaceConfig {
 
 /// The data fed into a network iface update request. Currently, only the RX and TX rate limiters
 /// can be updated.
-#[derive(Debug, Deserialize, PartialEq, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkInterfaceUpdateConfig {
     /// The net iface ID, as provided by the user at iface creation time.
@@ -62,7 +61,7 @@ pub struct NetworkInterfaceUpdateConfig {
 }
 
 /// Errors associated with `NetworkInterfaceConfig`.
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum NetworkInterfaceError {
     /// Could not create Network Device.
     CreateNetworkDevice(devices::virtio::net::Error),
@@ -80,25 +79,21 @@ impl fmt::Display for NetworkInterfaceError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::NetworkInterfaceError::*;
         match self {
-            CreateNetworkDevice(e) => write!(f, "Could not create Network Device: {:?}", e),
-            CreateRateLimiter(e) => write!(f, "Cannot create RateLimiter: {}", e),
-            GuestMacAddressInUse(mac_addr) => write!(
-                f,
-                "{}",
-                format!("The guest MAC address {} is already in use.", mac_addr)
-            ),
-            DeviceUpdate(e) => write!(f, "Error during interface update (patch): {}", e),
-            OpenTap(e) => {
+            CreateNetworkDevice(err) => write!(f, "Could not create Network Device: {:?}", err),
+            CreateRateLimiter(err) => write!(f, "Cannot create RateLimiter: {}", err),
+            GuestMacAddressInUse(mac_addr) => {
+                write!(f, "The guest MAC address {mac_addr} is already in use.")
+            }
+            DeviceUpdate(err) => write!(f, "Error during interface update (patch): {}", err),
+            OpenTap(err) => {
                 // We are propagating the Tap Error. This error can contain
                 // imbricated quotes which would result in an invalid json.
-                let mut tap_err = format!("{:?}", e);
-                tap_err = tap_err.replace("\"", "");
+                let mut tap_err = format!("{:?}", err);
+                tap_err = tap_err.replace('\"', "");
 
                 write!(
                     f,
-                    "{}{}",
-                    "Cannot open TAP device. Invalid name/permissions. ".to_string(),
-                    tap_err
+                    "Cannot open TAP device. Invalid name/permissions. {tap_err}",
                 )
             }
         }
@@ -177,19 +172,17 @@ impl NetBuilder {
         let rx_rate_limiter = cfg
             .rx_rate_limiter
             .map(super::RateLimiterConfig::try_into)
-            .transpose()
-            .map_err(NetworkInterfaceError::CreateRateLimiter)?;
+            .transpose()?;
         let tx_rate_limiter = cfg
             .tx_rate_limiter
             .map(super::RateLimiterConfig::try_into)
-            .transpose()
-            .map_err(NetworkInterfaceError::CreateRateLimiter)?;
+            .transpose()?;
 
         // Create and return the Net device
         devices::virtio::net::Net::new_with_tap(
             cfg.iface_id,
             cfg.host_dev_name.clone(),
-            cfg.guest_mac.as_ref(),
+            cfg.guest_mac,
             rx_rate_limiter.unwrap_or_default(),
             tx_rate_limiter.unwrap_or_default(),
         )
@@ -208,8 +201,9 @@ impl NetBuilder {
 
 #[cfg(test)]
 mod tests {
-    use rate_limiter::RateLimiter;
     use std::str;
+
+    use rate_limiter::RateLimiter;
 
     use super::*;
 
@@ -291,10 +285,7 @@ mod tests {
         let guest_mac_2 = "01:23:45:67:89:0b";
 
         let netif_2 = create_netif(id_2, host_dev_name_2, guest_mac_1);
-        let expected_error = format!(
-            "The guest MAC address {} is already in use.",
-            guest_mac_1.to_string()
-        );
+        let expected_error = format!("The guest MAC address {} is already in use.", guest_mac_1);
         assert_eq!(
             net_builder.build(netif_2).err().unwrap().to_string(),
             expected_error
@@ -319,10 +310,7 @@ mod tests {
         // Error Cases for UPDATE
         // Error Case: Update netif_2 mac using the same mac as netif_1.
         let netif_2 = create_netif(id_2, host_dev_name_2, guest_mac_1);
-        let expected_error = format!(
-            "The guest MAC address {} is already in use.",
-            guest_mac_1.to_string()
-        );
+        let expected_error = format!("The guest MAC address {} is already in use.", guest_mac_1);
         assert_eq!(
             net_builder.build(netif_2).err().unwrap().to_string(),
             expected_error
@@ -391,7 +379,7 @@ mod tests {
         let net = Net::new_with_tap(
             net_id.to_string(),
             host_dev_name.to_string(),
-            Some(&MacAddr::parse_str(guest_mac).unwrap()),
+            Some(MacAddr::parse_str(guest_mac).unwrap()),
             RateLimiter::default(),
             RateLimiter::default(),
         )

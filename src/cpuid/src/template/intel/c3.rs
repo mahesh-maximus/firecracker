@@ -1,11 +1,12 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use kvm_bindings::{kvm_cpuid_entry2, CpuId};
+
 use crate::bit_helper::BitHelper;
 use crate::cpu_leaf::*;
 use crate::template::intel::validate_vendor_id;
 use crate::transformer::*;
-use kvm_bindings::{kvm_cpuid_entry2, CpuId};
 
 fn update_feature_info_entry(entry: &mut kvm_cpuid_entry2, _vm_spec: &VmSpec) -> Result<(), Error> {
     use crate::cpu_leaf::leaf_0x1::*;
@@ -25,7 +26,7 @@ fn update_feature_info_entry(entry: &mut kvm_cpuid_entry2, _vm_spec: &VmSpec) ->
         // Stepping = 4
         .write_bits_in_range(&eax::STEPPING_BITRANGE, 4);
 
-    // Disable Features
+    // Enable/disable Features
     entry
         .ecx
         .write_bit(ecx::DTES64_BITINDEX, false)
@@ -43,6 +44,8 @@ fn update_feature_info_entry(entry: &mut kvm_cpuid_entry2, _vm_spec: &VmSpec) ->
 
     entry
         .edx
+        .write_bit(edx::MCE_BITINDEX, true)
+        .write_bit(edx::MTRR_BITINDEX, true)
         .write_bit(edx::PSN_BITINDEX, false)
         .write_bit(edx::DS_BITINDEX, false)
         .write_bit(edx::ACPI_BITINDEX, false)

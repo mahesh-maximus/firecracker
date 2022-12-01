@@ -65,8 +65,8 @@
 //! to avoid panics.
 
 use std::marker::PhantomData;
-use std::mem::replace;
 use std::ops::{Deref, DerefMut};
+
 use utils::byte_order;
 
 /// Represents an immutable view into a sequence of bytes which stands for different values packed
@@ -138,7 +138,7 @@ impl<'a> NetworkBytes for &'a [u8] {
 impl<'a> NetworkBytes for &'a mut [u8] {
     #[inline]
     fn shrink_unchecked(&mut self, len: usize) {
-        *self = &mut replace(self, &mut [])[..len];
+        *self = &mut std::mem::take(self)[..len];
     }
 }
 

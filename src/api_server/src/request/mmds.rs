@@ -1,13 +1,14 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::parsed_request::{Error, ParsedRequest};
-use crate::request::Body;
 use logger::{IncMetric, METRICS};
 use micro_http::StatusCode;
 use mmds::data_store::MmdsVersion;
 use vmm::rpc_interface::VmmAction;
 use vmm::vmm_config::mmds::MmdsConfig;
+
+use crate::parsed_request::{Error, ParsedRequest};
+use crate::request::Body;
 
 pub(crate) fn parse_get_mmds() -> Result<ParsedRequest, Error> {
     METRICS.get_api_requests.mmds_count.inc();
@@ -15,9 +16,9 @@ pub(crate) fn parse_get_mmds() -> Result<ParsedRequest, Error> {
 }
 
 fn parse_put_mmds_config(body: &Body) -> Result<ParsedRequest, Error> {
-    let config: MmdsConfig = serde_json::from_slice(body.raw()).map_err(|e| {
+    let config: MmdsConfig = serde_json::from_slice(body.raw()).map_err(|err| {
         METRICS.put_api_requests.mmds_fails.inc();
-        Error::SerdeJson(e)
+        err
     })?;
     // Construct the `ParsedRequest` object.
     let version = config.version;
@@ -41,9 +42,9 @@ pub(crate) fn parse_put_mmds(
     METRICS.put_api_requests.mmds_count.inc();
     match path_second_token {
         None => Ok(ParsedRequest::new_sync(VmmAction::PutMMDS(
-            serde_json::from_slice(body.raw()).map_err(|e| {
+            serde_json::from_slice(body.raw()).map_err(|err| {
                 METRICS.put_api_requests.mmds_fails.inc();
-                Error::SerdeJson(e)
+                err
             })?,
         ))),
         Some(&"config") => parse_put_mmds_config(body),
@@ -60,9 +61,9 @@ pub(crate) fn parse_put_mmds(
 pub(crate) fn parse_patch_mmds(body: &Body) -> Result<ParsedRequest, Error> {
     METRICS.patch_api_requests.mmds_count.inc();
     Ok(ParsedRequest::new_sync(VmmAction::PatchMMDS(
-        serde_json::from_slice(body.raw()).map_err(|e| {
+        serde_json::from_slice(body.raw()).map_err(|err| {
             METRICS.patch_api_requests.mmds_fails.inc();
-            Error::SerdeJson(e)
+            err
         })?,
     )))
 }

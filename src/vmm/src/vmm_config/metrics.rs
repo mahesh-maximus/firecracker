@@ -5,13 +5,13 @@
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 
-use super::{open_file_nonblock, FcLineWriter};
 use logger::METRICS;
-
 use serde::{Deserialize, Serialize};
 
+use super::{open_file_nonblock, FcLineWriter};
+
 /// Strongly typed structure used to describe the metrics system.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MetricsConfig {
     /// Named pipe or file used as output for metrics.
     pub metrics_path: PathBuf,
@@ -28,7 +28,7 @@ impl Display for MetricsConfigError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         use self::MetricsConfigError::*;
         match *self {
-            InitializationFailure(ref err_msg) => write!(f, "{}", err_msg.replace("\"", "")),
+            InitializationFailure(ref err_msg) => write!(f, "{}", err_msg.replace('\"', "")),
         }
     }
 }
@@ -37,17 +37,18 @@ impl Display for MetricsConfigError {
 pub fn init_metrics(metrics_cfg: MetricsConfig) -> std::result::Result<(), MetricsConfigError> {
     let writer = FcLineWriter::new(
         open_file_nonblock(&metrics_cfg.metrics_path)
-            .map_err(|e| MetricsConfigError::InitializationFailure(e.to_string()))?,
+            .map_err(|err| MetricsConfigError::InitializationFailure(err.to_string()))?,
     );
     METRICS
         .init(Box::new(writer))
-        .map_err(|e| MetricsConfigError::InitializationFailure(e.to_string()))
+        .map_err(|err| MetricsConfigError::InitializationFailure(err.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use utils::tempfile::TempFile;
+
+    use super::*;
 
     #[test]
     fn test_init_metrics() {

@@ -1,22 +1,22 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
+
+#![warn(clippy::ptr_as_ptr)]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::cast_lossless)]
+
 mod cgroup;
 mod chroot;
 mod env;
 mod resource_limits;
-use std::env as p_env;
-
 use std::ffi::{CString, NulError, OsString};
-use std::fmt;
-use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
-use std::process;
-use std::result;
+use std::{env as p_env, fmt, fs, io, process, result};
 
-use crate::env::Env;
 use utils::arg_parser::{ArgParser, Argument, Error as ParsingError};
 use utils::validators;
+
+use crate::env::Env;
 
 const JAILER_VERSION: &str = env!("FIRECRACKER_VERSION");
 #[derive(Debug)]
@@ -43,7 +43,8 @@ pub enum Error {
     CStringParsing(NulError),
     Dup2(io::Error),
     Exec(io::Error),
-    FileName(PathBuf),
+    ExecFileName(String),
+    ExtractFileName(PathBuf),
     FileOpen(PathBuf, io::Error),
     FromBytesWithNul(std::ffi::FromBytesWithNulError),
     GetOldFdFlags(io::Error),
@@ -87,7 +88,7 @@ impl fmt::Display for Error {
             Canonicalize(ref path, ref io_err) => write!(
                 f,
                 "{}",
-                format!("Failed to canonicalize path {:?}: {}", path, io_err).replace("\"", "")
+                format!("Failed to canonicalize path {:?}: {}", path, io_err).replace('\"', "")
             ),
             Chmod(ref path, ref err) => {
                 write!(f, "Failed to change permissions on {:?}: {}", path, err)
@@ -99,7 +100,7 @@ impl fmt::Display for Error {
                     "Failed to inherit cgroups configurations from file {} in path {:?}",
                     filename, path
                 )
-                .replace("\"", "")
+                .replace('\"', "")
             ),
             CgroupLineNotFound(ref proc_mounts, ref controller) => write!(
                 f,
@@ -121,7 +122,8 @@ impl fmt::Display for Error {
             CgroupInvalidParentPath() => {
                 write!(
                     f,
-                    "Parent cgroup path is invalid. Path should not be absolute or contain '..' or '.'",
+                    "Parent cgroup path is invalid. Path should not be absolute or contain '..' \
+                     or '.'",
                 )
             }
             ChangeFileOwner(ref path, ref err) => {
@@ -134,25 +136,31 @@ impl fmt::Display for Error {
             Copy(ref file, ref path, ref err) => write!(
                 f,
                 "{}",
-                format!("Failed to copy {:?} to {:?}: {}", file, path, err).replace("\"", "")
+                format!("Failed to copy {:?} to {:?}: {}", file, path, err).replace('\"', "")
             ),
             CreateDir(ref path, ref err) => write!(
                 f,
                 "{}",
-                format!("Failed to create directory {:?}: {}", path, err).replace("\"", "")
+                format!("Failed to create directory {:?}: {}", path, err).replace('\"', "")
             ),
             CStringParsing(_) => write!(f, "Encountered interior \\0 while parsing a string"),
             Dup2(ref err) => write!(f, "Failed to duplicate fd: {}", err),
             Exec(ref err) => write!(f, "Failed to exec into Firecracker: {}", err),
-            FileName(ref path) => write!(
+            ExecFileName(ref filename) => write!(
+                f,
+                "Invalid filename. The filename of `--exec-file` option must contain \
+                 \"firecracker\": {}",
+                filename
+            ),
+            ExtractFileName(ref path) => write!(
                 f,
                 "{}",
-                format!("Failed to extract filename from path {:?}", path).replace("\"", "")
+                format!("Failed to extract filename from path {:?}", path).replace('\"', "")
             ),
             FileOpen(ref path, ref err) => write!(
                 f,
                 "{}",
-                format!("Failed to open file {:?}: {}", path, err).replace("\"", "")
+                format!("Failed to open file {:?}: {}", path, err).replace('\"', "")
             ),
             FromBytesWithNul(ref err) => {
                 write!(f, "Failed to decode string from byte array: {}", err)
@@ -163,7 +171,7 @@ impl fmt::Display for Error {
             MissingParent(ref path) => write!(
                 f,
                 "{}",
-                format!("File {:?} doesn't have a parent", path).replace("\"", "")
+                format!("File {:?} doesn't have a parent", path).replace('\"', "")
             ),
             MkdirOldRoot(ref err) => write!(
                 f,
@@ -184,29 +192,29 @@ impl fmt::Display for Error {
             NotAFile(ref path) => write!(
                 f,
                 "{}",
-                format!("{:?} is not a file", path).replace("\"", "")
+                format!("{:?} is not a file", path).replace('\"', "")
             ),
             NotADirectory(ref path) => write!(
                 f,
                 "{}",
-                format!("{:?} is not a directory", path).replace("\"", "")
+                format!("{:?} is not a directory", path).replace('\"', "")
             ),
             OpenDevNull(ref err) => write!(f, "Failed to open /dev/null: {}", err),
             OsStringParsing(ref path, _) => write!(
                 f,
                 "{}",
-                format!("Failed to parse path {:?} into an OsString", path).replace("\"", "")
+                format!("Failed to parse path {:?} into an OsString", path).replace('\"', "")
             ),
             PivotRoot(ref err) => write!(f, "Failed to pivot root: {}", err),
             ReadLine(ref path, ref err) => write!(
                 f,
                 "{}",
-                format!("Failed to read line from {:?}: {}", path, err).replace("\"", "")
+                format!("Failed to read line from {:?}: {}", path, err).replace('\"', "")
             ),
             ReadToString(ref path, ref err) => write!(
                 f,
                 "{}",
-                format!("Failed to read file {:?} into a string: {}", path, err).replace("\"", "")
+                format!("Failed to read file {:?} into a string: {}", path, err).replace('\"', "")
             ),
             RegEx(ref err) => write!(f, "Regex failed: {:?}", err),
             ResLimitArgument(ref arg) => write!(f, "Invalid resource argument: {}", arg,),
@@ -235,7 +243,7 @@ impl fmt::Display for Error {
             Write(ref path, ref err) => write!(
                 f,
                 "{}",
-                format!("Failed to write to {:?}: {}", path, err).replace("\"", "")
+                format!("Failed to write to {:?}: {}", path, err).replace('\"', "")
             ),
         }
     }
@@ -243,8 +251,8 @@ impl fmt::Display for Error {
 
 pub type Result<T> = result::Result<T, Error>;
 
-/// Create an ArgParser object which contains info about the command line argument parser and populate
-/// it with the expected arguments and their characteristics.
+/// Create an ArgParser object which contains info about the command line argument parser and
+/// populate it with the expected arguments and their characteristics.
 pub fn build_arg_parser() -> ArgParser<'static> {
     ArgParser::new()
         .arg(
@@ -283,8 +291,8 @@ pub fn build_arg_parser() -> ArgParser<'static> {
                 .help("Path to the network namespace this microVM should join."),
         )
         .arg(Argument::new("daemonize").takes_value(false).help(
-            "Daemonize the jailer before exec, by invoking setsid(), and redirecting \
-             the standard I/O file descriptors to /dev/null.",
+            "Daemonize the jailer before exec, by invoking setsid(), and redirecting the standard \
+             I/O file descriptors to /dev/null.",
         ))
         .arg(
             Argument::new("new-pid-ns")
@@ -293,17 +301,16 @@ pub fn build_arg_parser() -> ArgParser<'static> {
         )
         .arg(Argument::new("cgroup").allow_multiple(true).help(
             "Cgroup and value to be set by the jailer. It must follow this format: \
-             <cgroup_file>=<value> (e.g cpu.shares=10). This argument can be used \
-             multiple times to add multiple cgroups.",
+             <cgroup_file>=<value> (e.g cpu.shares=10). This argument can be used multiple times \
+             to add multiple cgroups.",
         ))
         .arg(Argument::new("resource-limit").allow_multiple(true).help(
             "Resource limit values to be set by the jailer. It must follow this format: \
-             <resource>=<value> (e.g no-file=1024). This argument can be used \
-             multiple times to add multiple resource limits. \
-             Current available resource values are:\n\
-             \t\tfsize: The maximum size in bytes for files created by the process.\n\
-             \t\tno-file: Specifies a value one greater than the maximum file descriptor number \
-             that can be opened by this process.",
+             <resource>=<value> (e.g no-file=1024). This argument can be used multiple times to \
+             add multiple resource limits. Current available resource values are:\n\t\tfsize: The \
+             maximum size in bytes for files created by the process.\n\t\tno-file: Specifies a \
+             value one greater than the maximum file descriptor number that can be opened by this \
+             process.",
         ))
         .arg(
             Argument::new("cgroup-version")
@@ -331,12 +338,12 @@ where
     V: ::std::fmt::Display,
 {
     fs::write(file_path, format!("{}\n", value))
-        .map_err(|e| Error::Write(PathBuf::from(file_path.as_ref()), e))
+        .map_err(|err| Error::Write(PathBuf::from(file_path.as_ref()), err))
 }
 
 pub fn readln_special<T: AsRef<Path>>(file_path: &T) -> Result<String> {
     let mut line = fs::read_to_string(file_path)
-        .map_err(|e| Error::ReadToString(PathBuf::from(file_path.as_ref()), e))?;
+        .map_err(|err| Error::ReadToString(PathBuf::from(file_path.as_ref()), err))?;
 
     // Remove the newline character at the end (if any).
     line.pop();
@@ -347,18 +354,14 @@ pub fn readln_special<T: AsRef<Path>>(file_path: &T) -> Result<String> {
 fn sanitize_process() {
     // First thing to do is make sure we don't keep any inherited FDs
     // other that IN, OUT and ERR.
-    if let Ok(paths) = fs::read_dir("/proc/self/fd") {
-        for maybe_path in paths {
-            if maybe_path.is_err() {
-                continue;
-            }
-
-            let file_name = maybe_path.unwrap().file_name();
+    if let Ok(mut paths) = fs::read_dir("/proc/self/fd") {
+        while let Some(Ok(path)) = paths.next() {
+            let file_name = path.file_name();
             let fd_str = file_name.to_str().unwrap_or("0");
             let fd = fd_str.parse::<i32>().unwrap_or(0);
 
             if fd > 2 {
-                // Safe because close() cannot fail when passed a valid parameter.
+                // SAFETY: Safe because close() cannot fail when passed a valid parameter.
                 unsafe { libc::close(fd) };
             }
         }
@@ -386,7 +389,7 @@ pub fn to_cstring<T: AsRef<Path>>(path: T) -> Result<CString> {
         .to_path_buf()
         .into_os_string()
         .into_string()
-        .map_err(|e| Error::OsStringParsing(path.as_ref().to_path_buf(), e))?;
+        .map_err(|err| Error::OsStringParsing(path.as_ref().to_path_buf(), err))?;
     CString::new(path_str).map_err(Error::CStringParsing)
 }
 
@@ -398,8 +401,7 @@ fn main() {
     match arg_parser.parse_from_cmdline() {
         Err(err) => {
             println!(
-                "Arguments parsing error: {} \n\n\
-                 For more information try --help.",
+                "Arguments parsing error: {} \n\nFor more information try --help.",
                 err
             );
             process::exit(1);
@@ -409,8 +411,7 @@ fn main() {
                 println!("Jailer v{}\n", JAILER_VERSION);
                 println!("{}\n", arg_parser.formatted_help());
                 println!(
-                    "Any arguments after the -- separator will be supplied to the jailed \
-                     binary.\n"
+                    "Any arguments after the -- separator will be supplied to the jailed binary.\n"
                 );
                 process::exit(0);
             }
@@ -429,7 +430,7 @@ fn main() {
     )
     .and_then(|env| {
         fs::create_dir_all(env.chroot_dir())
-            .map_err(|e| Error::CreateDir(env.chroot_dir().to_owned(), e))?;
+            .map_err(|err| Error::CreateDir(env.chroot_dir().to_owned(), err))?;
         env.run()
     })
     .unwrap_or_else(|err| panic!("Jailer error: {}", err));
@@ -437,12 +438,14 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    #![allow(clippy::undocumented_unsafe_blocks)]
     use std::env;
     use std::fs::File;
     use std::os::unix::io::IntoRawFd;
 
     use utils::arg_parser;
+
+    use super::*;
 
     #[test]
     fn test_sanitize_process() {
@@ -462,7 +465,7 @@ mod tests {
 
         for fd in fds {
             let is_fd_opened = unsafe { libc::fcntl(fd, libc::F_GETFD) } == 0;
-            assert_eq!(is_fd_opened, false);
+            assert!(!is_fd_opened);
         }
 
         assert!(fs::remove_dir_all(tmp_dir_path).is_ok());
@@ -505,7 +508,8 @@ mod tests {
 
         assert_eq!(
             format!("{}", Error::ArgumentParsing(err_args_parse)),
-            "Failed to parse arguments: Found argument 'foo' which wasn't expected, or isn't valid in this context."
+            "Failed to parse arguments: Found argument 'foo' which wasn't expected, or isn't \
+             valid in this context."
         );
         assert_eq!(
             format!(
@@ -614,7 +618,12 @@ mod tests {
             format!("Failed to exec into Firecracker: {}", err2_str)
         );
         assert_eq!(
-            format!("{}", Error::FileName(file_path.clone())),
+            format!("{}", Error::ExecFileName("foobarbaz".to_string())),
+            "Invalid filename. The filename of `--exec-file` option must contain \"firecracker\": \
+             foobarbaz",
+        );
+        assert_eq!(
+            format!("{}", Error::ExtractFileName(file_path.clone())),
             "Failed to extract filename from path /foo/bar",
         );
         assert_eq!(
@@ -664,11 +673,16 @@ mod tests {
         );
         assert_eq!(
             format!("{}", Error::MountBind(io::Error::from_raw_os_error(42))),
-            "Failed to bind mount the jail root directory: No message of desired type (os error 42)",
+            "Failed to bind mount the jail root directory: No message of desired type (os error \
+             42)",
         );
         assert_eq!(
-            format!("{}", Error::MountPropagationSlave(io::Error::from_raw_os_error(42))),
-            "Failed to change the propagation type to slave: No message of desired type (os error 42)",
+            format!(
+                "{}",
+                Error::MountPropagationSlave(io::Error::from_raw_os_error(42))
+            ),
+            "Failed to change the propagation type to slave: No message of desired type (os error \
+             42)",
         );
         assert_eq!(
             format!("{}", Error::NotAFile(file_path.clone())),

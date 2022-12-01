@@ -1,11 +1,13 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::token::{Error as TokenError, TokenAuthority};
-use serde::{Deserialize, Serialize};
-use serde_json::{to_vec, Value};
 use std::fmt;
 use std::fmt::{Display, Formatter};
+
+use serde::{Deserialize, Serialize};
+use serde_json::{to_vec, Value};
+
+use crate::token::{Error as TokenError, TokenAuthority};
 
 /// The Mmds is the Microvm Metadata Service represented as an untyped json.
 pub struct Mmds {
@@ -17,7 +19,7 @@ pub struct Mmds {
 }
 
 /// MMDS version.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum MmdsVersion {
     V1,
     V2,
@@ -44,7 +46,7 @@ pub enum OutputFormat {
     Imds,
 }
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum Error {
     DataStoreLimitExceeded,
     NotFound,
@@ -105,8 +107,7 @@ impl Mmds {
             }
             MmdsVersion::V2 => {
                 if self.token_authority.is_none() {
-                    self.token_authority =
-                        Some(TokenAuthority::new().map_err(Error::TokenAuthority)?);
+                    self.token_authority = Some(TokenAuthority::new()?);
                 }
                 Ok(())
             }
@@ -252,8 +253,8 @@ impl Mmds {
         }
     }
 
-    /// Returns the subtree located at path. When the path corresponds to a leaf, it returns the value.
-    /// Returns Error::NotFound when the path is invalid.
+    /// Returns the subtree located at path. When the path corresponds to a leaf, it returns the
+    /// value. Returns Error::NotFound when the path is invalid.
     pub fn get_value(&self, path: String, format: OutputFormat) -> Result<String, Error> {
         // The pointer function splits the input by "/". With a trailing "/", pointer does not
         // know how to get the object.
@@ -543,7 +544,7 @@ mod tests {
         assert!(mmds.patch_data(data_store).is_ok());
 
         let data = "{\"new_key2\" : \"smth\"}";
-        let data_store: Value = serde_json::from_str(&data).unwrap();
+        let data_store: Value = serde_json::from_str(data).unwrap();
         assert_eq!(
             mmds.patch_data(data_store).unwrap_err().to_string(),
             Error::DataStoreLimitExceeded.to_string()
@@ -551,13 +552,13 @@ mod tests {
         assert!(!mmds.get_data_str().contains("smth"));
 
         let data = "{\"new_key\" : \"smth\"}";
-        let data_store: Value = serde_json::from_str(&data).unwrap();
+        let data_store: Value = serde_json::from_str(data).unwrap();
         assert!(mmds.patch_data(data_store).is_ok());
         assert!(mmds.get_data_str().contains("smth"));
         assert_eq!(mmds.get_data_str().len(), 53);
 
         let data = "{\"new_key2\" : \"smth2\"}";
-        let data_store: Value = serde_json::from_str(&data).unwrap();
+        let data_store: Value = serde_json::from_str(data).unwrap();
         assert!(mmds.patch_data(data_store).is_ok());
         assert!(mmds.get_data_str().contains("smth2"));
         assert_eq!(mmds.get_data_str().len(), 72);

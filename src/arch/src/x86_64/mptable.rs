@@ -6,22 +6,18 @@
 // found in the THIRD-PARTY file.
 
 use std::convert::TryFrom;
-use std::io;
-use std::mem;
-use std::result;
-use std::slice;
-
-use libc::c_char;
+use std::{io, mem, result, slice};
 
 use arch_gen::x86::mpspec;
+use libc::c_char;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap};
 
 use crate::IRQ_MAX;
 
 // This is a workaround to the Rust enforcement specifying that any implementation of a foreign
 // trait (in this case `ByteValued`) where:
-// *    the type that is implementing the trait is foreign or
-// *    all of the parameters being passed to the trait (if there are any) are also foreign
+// * the type that is implementing the trait is foreign or
+// * all of the parameters being passed to the trait (if there are any) are also foreign
 // is prohibited.
 #[derive(Copy, Clone, Default)]
 struct MpcBusWrapper(mpspec::mpc_bus);
@@ -39,18 +35,25 @@ struct MpcLintsrcWrapper(mpspec::mpc_lintsrc);
 struct MpfIntelWrapper(mpspec::mpf_intel);
 
 // These `mpspec` wrapper types are only data, reading them from data is a safe initialization.
+// SAFETY: POD
 unsafe impl ByteValued for MpcBusWrapper {}
+// SAFETY: POD
 unsafe impl ByteValued for MpcCpuWrapper {}
+// SAFETY: POD
 unsafe impl ByteValued for MpcIntsrcWrapper {}
+// SAFETY: POD
 unsafe impl ByteValued for MpcIoapicWrapper {}
+// SAFETY: POD
 unsafe impl ByteValued for MpcTableWrapper {}
+// SAFETY: POD
 unsafe impl ByteValued for MpcLintsrcWrapper {}
+// SAFETY: POD
 unsafe impl ByteValued for MpfIntelWrapper {}
 
 // MPTABLE, describing VCPUS.
 const MPTABLE_START: u64 = 0x9fc00;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     /// There was too little guest memory to store the entire MP table.
     NotEnoughMemory,
@@ -105,8 +108,11 @@ const CPU_FEATURE_APIC: u32 = 0x200;
 const CPU_FEATURE_FPU: u32 = 0x001;
 
 fn compute_checksum<T: Copy>(v: &T) -> u8 {
-    // Safe because we are only reading the bytes within the size of the `T` reference `v`.
-    let v_slice = unsafe { slice::from_raw_parts(v as *const T as *const u8, mem::size_of::<T>()) };
+    // SAFETY: Safe because we are only reading the bytes within the size of the `T` reference `v`.
+    let v_slice = unsafe {
+        let ptr = (v as *const T).cast::<u8>();
+        slice::from_raw_parts(ptr, mem::size_of::<T>())
+    };
     let mut checksum: u8 = 0;
     for i in v_slice.iter() {
         checksum = checksum.wrapping_add(*i);
@@ -225,7 +231,7 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8) -> Result<()> {
         let mut mpc_intsrc = MpcIntsrcWrapper(mpspec::mpc_intsrc::default());
         mpc_intsrc.0.type_ = mpspec::MP_INTSRC as u8;
         mpc_intsrc.0.irqtype = mpspec::mp_irq_source_types_mp_INT as u8;
-        mpc_intsrc.0.irqflag = mpspec::MP_IRQDIR_DEFAULT as u16;
+        mpc_intsrc.0.irqflag = mpspec::MP_IRQPOL_DEFAULT as u16;
         mpc_intsrc.0.srcbus = 0;
         mpc_intsrc.0.srcbusirq = i;
         mpc_intsrc.0.dstapic = ioapicid;
@@ -240,7 +246,7 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8) -> Result<()> {
         let mut mpc_lintsrc = MpcLintsrcWrapper(mpspec::mpc_lintsrc::default());
         mpc_lintsrc.0.type_ = mpspec::MP_LINTSRC as u8;
         mpc_lintsrc.0.irqtype = mpspec::mp_irq_source_types_mp_ExtINT as u8;
-        mpc_lintsrc.0.irqflag = mpspec::MP_IRQDIR_DEFAULT as u16;
+        mpc_lintsrc.0.irqflag = mpspec::MP_IRQPOL_DEFAULT as u16;
         mpc_lintsrc.0.srcbusid = 0;
         mpc_lintsrc.0.srcbusirq = 0;
         mpc_lintsrc.0.destapic = 0;
@@ -255,10 +261,10 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8) -> Result<()> {
         let mut mpc_lintsrc = MpcLintsrcWrapper(mpspec::mpc_lintsrc::default());
         mpc_lintsrc.0.type_ = mpspec::MP_LINTSRC as u8;
         mpc_lintsrc.0.irqtype = mpspec::mp_irq_source_types_mp_NMI as u8;
-        mpc_lintsrc.0.irqflag = mpspec::MP_IRQDIR_DEFAULT as u16;
+        mpc_lintsrc.0.irqflag = mpspec::MP_IRQPOL_DEFAULT as u16;
         mpc_lintsrc.0.srcbusid = 0;
         mpc_lintsrc.0.srcbusirq = 0;
-        mpc_lintsrc.0.destapic = 0xFF; /* to all local APICs */
+        mpc_lintsrc.0.destapic = 0xFF; // to all local APICs
         mpc_lintsrc.0.destapiclint = 1;
         mem.write_obj(mpc_lintsrc, base_mp)
             .map_err(|_| Error::WriteMpcLintsrc)?;
@@ -290,8 +296,9 @@ pub fn setup_mptable(mem: &GuestMemoryMmap, num_cpus: u8) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use vm_memory::Bytes;
+
+    use super::*;
 
     fn table_entry_size(type_: u8) -> usize {
         match u32::from(type_) {

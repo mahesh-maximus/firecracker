@@ -3,21 +3,22 @@
 
 use std::ffi::{CStr, OsString};
 use std::fs::{self, canonicalize, File, OpenOptions, Permissions};
+use std::io;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::AsRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+
+use utils::arg_parser::Error::MissingValue;
+use utils::syscall::SyscallReturnCode;
+use utils::{arg_parser, validators};
 
 use crate::cgroup::{Cgroup, CgroupBuilder};
 use crate::chroot::chroot;
 use crate::resource_limits::{ResourceLimits, FSIZE_ARG, NO_FILE_ARG};
 use crate::{Error, Result};
-use std::io;
-use std::io::Write;
-use utils::arg_parser::Error::MissingValue;
-use utils::syscall::SyscallReturnCode;
-use utils::{arg_parser, validators};
 
 const STDIN_FILENO: libc::c_int = 0;
 const STDOUT_FILENO: libc::c_int = 1;
@@ -42,8 +43,6 @@ const DEV_URANDOM_WITH_NUL: &[u8] = b"/dev/urandom\0";
 const DEV_URANDOM_MAJOR: u32 = 1;
 const DEV_URANDOM_MINOR: u32 = 9;
 
-const DEV_NULL_WITH_NUL: &[u8] = b"/dev/null\0";
-
 // Relevant folders inside the jail that we create or/and for which we change ownership.
 // We need /dev in order to be able to create /dev/kvm and /dev/net/tun device.
 // We need /run for the default location of the api socket.
@@ -58,7 +57,7 @@ const PID_FILE_EXTENSION: &str = ".pid";
 
 // Helper function, since we'll use libc::dup2 a bunch of times for daemonization.
 fn dup2(old_fd: libc::c_int, new_fd: libc::c_int) -> Result<()> {
-    // This is safe because we are using a library function with valid parameters.
+    // SAFETY: This is safe because we are using a library function with valid parameters.
     SyscallReturnCode(unsafe { libc::dup2(old_fd, new_fd) })
         .into_empty_result()
         .map_err(Error::Dup2)
@@ -72,12 +71,14 @@ fn dup2(old_fd: libc::c_int, new_fd: libc::c_int) -> Result<()> {
 fn clone(child_stack: *mut libc::c_void, flags: libc::c_int) -> Result<libc::c_int> {
     // Clone parameters order is different between x86_64 and aarch64.
     #[cfg(target_arch = "x86_64")]
+    // SAFETY: This is safe because we are using a library function with valid parameters.
     return SyscallReturnCode(unsafe {
         libc::syscall(libc::SYS_clone, flags, child_stack, 0, 0, 0) as libc::c_int
     })
     .into_result()
     .map_err(Error::Clone);
     #[cfg(target_arch = "aarch64")]
+    // SAFETY: This is safe because we are using a library function with valid parameters.
     return SyscallReturnCode(unsafe {
         libc::syscall(libc::SYS_clone, flags, child_stack, 0, 0, 0) as libc::c_int
     })
@@ -108,7 +109,8 @@ impl Env {
         start_time_us: u64,
         start_time_cpu_us: u64,
     ) -> Result<Self> {
-        // Unwraps should not fail because the arguments are mandatory arguments or with default values.
+        // Unwraps should not fail because the arguments are mandatory arguments or with default
+        // values.
         let id = arguments
             .single_value("id")
             .ok_or_else(|| Error::ArgumentParsing(MissingValue("id".to_string())))?;
@@ -118,22 +120,13 @@ impl Env {
         let exec_file = arguments
             .single_value("exec-file")
             .ok_or_else(|| Error::ArgumentParsing(MissingValue("exec-file".to_string())))?;
-        let exec_file_path = canonicalize(&exec_file)
-            .map_err(|e| Error::Canonicalize(PathBuf::from(&exec_file), e))?;
-
-        if !exec_file_path.is_file() {
-            return Err(Error::NotAFile(exec_file_path));
-        }
-
-        let exec_file_name = exec_file_path
-            .file_name()
-            .ok_or_else(|| Error::FileName(exec_file_path.clone()))?;
+        let (exec_file_path, exec_file_name) = Env::validate_exec_file(exec_file)?;
 
         let chroot_base = arguments
             .single_value("chroot-base-dir")
             .ok_or_else(|| Error::ArgumentParsing(MissingValue("chroot-base-dir".to_string())))?;
         let mut chroot_dir = canonicalize(&chroot_base)
-            .map_err(|e| Error::Canonicalize(PathBuf::from(&chroot_base), e))?;
+            .map_err(|err| Error::Canonicalize(PathBuf::from(&chroot_base), err))?;
 
         if !chroot_dir.is_dir() {
             return Err(Error::NotADirectory(chroot_dir));
@@ -167,7 +160,7 @@ impl Env {
         let mut cgroups: Vec<Box<dyn Cgroup>> = Vec::new();
         let parent_cgroup = match arguments.single_value("parent-cgroup") {
             Some(parent_cg) => Path::new(parent_cg),
-            None => Path::new(exec_file_name),
+            None => Path::new(&exec_file_name),
         };
         if parent_cgroup
             .components()
@@ -245,6 +238,29 @@ impl Env {
         self.uid
     }
 
+    fn validate_exec_file(exec_file: &str) -> Result<(PathBuf, String)> {
+        let exec_file_path = canonicalize(exec_file)
+            .map_err(|err| Error::Canonicalize(PathBuf::from(exec_file), err))?;
+
+        if !exec_file_path.is_file() {
+            return Err(Error::NotAFile(exec_file_path));
+        }
+
+        let exec_file_name = exec_file_path
+            .file_name()
+            .ok_or_else(|| Error::ExtractFileName(exec_file_path.clone()))?
+            .to_str()
+            // Safe to unwrap as the original `exec_file` is `String`.
+            .unwrap()
+            .to_string();
+
+        if !exec_file_name.contains("firecracker") {
+            return Err(Error::ExecFileName(exec_file_name));
+        }
+
+        Ok((exec_file_path, exec_file_name))
+    }
+
     fn parse_resource_limits(resource_limits: &mut ResourceLimits, args: &[String]) -> Result<()> {
         for arg in args {
             let (name, value) = arg
@@ -283,6 +299,7 @@ impl Env {
                 // Save the PID of the process running the exec file provided
                 // inside <chroot_exec_file>.pid file.
                 self.save_exec_file_pid(child_pid, chroot_exec_file)?;
+                // SAFETY: This is safe because 0 is valid input to exit.
                 unsafe { libc::exit(0) }
             }
         }
@@ -291,17 +308,17 @@ impl Env {
     fn save_exec_file_pid(&mut self, pid: i32, chroot_exec_file: PathBuf) -> Result<()> {
         let chroot_exec_file_str = chroot_exec_file
             .to_str()
-            .ok_or_else(|| Error::FileName(chroot_exec_file.clone()))?;
+            .ok_or_else(|| Error::ExtractFileName(chroot_exec_file.clone()))?;
         let pid_file_path =
             PathBuf::from(format!("{}{}", chroot_exec_file_str, PID_FILE_EXTENSION));
         let mut pid_file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(pid_file_path.clone())
-            .map_err(|e| Error::FileOpen(pid_file_path.clone(), e))?;
+            .map_err(|err| Error::FileOpen(pid_file_path.clone(), err))?;
 
         // Write PID to file.
-        write!(pid_file, "{}", pid).map_err(|e| Error::Write(pid_file_path, e))
+        write!(pid_file, "{}", pid).map_err(|err| Error::Write(pid_file_path, err))
     }
 
     fn mknod_and_own_dev(
@@ -317,6 +334,7 @@ impl Env {
         // S_IWUSR -> write permission, owner
         // See www.kernel.org/doc/Documentation/networking/tuntap.txt, 'Configuration' chapter for
         // more clarity.
+        // SAFETY: This is safe because dev_path is CStr, and hence null-terminated.
         SyscallReturnCode(unsafe {
             libc::mknod(
                 dev_path.as_ptr(),
@@ -325,17 +343,18 @@ impl Env {
             )
         })
         .into_empty_result()
-        .map_err(|e| {
+        .map_err(|err| {
             Error::MknodDev(
-                e,
+                err,
                 std::str::from_utf8(dev_path_str).expect("Cannot convert from UTF-8"),
             )
         })?;
 
+        // SAFETY: This is safe because dev_path is CStr, and hence null-terminated.
         SyscallReturnCode(unsafe { libc::chown(dev_path.as_ptr(), self.uid(), self.gid()) })
             .into_empty_result()
             // Safe to unwrap as we provided valid file names.
-            .map_err(|e| Error::ChangeFileOwner(PathBuf::from(dev_path.to_str().unwrap()), e))
+            .map_err(|err| Error::ChangeFileOwner(PathBuf::from(dev_path.to_str().unwrap()), err))
     }
 
     fn setup_jailed_folder(&self, folder: &[u8]) -> Result<()> {
@@ -344,24 +363,25 @@ impl Env {
         // Safe to unwrap as the byte sequence is UTF-8 validated above.
         let path = folder_cstr.to_str().unwrap();
         let path_buf = PathBuf::from(path);
-        fs::create_dir_all(path).map_err(|e| Error::CreateDir(path_buf.clone(), e))?;
+        fs::create_dir_all(path).map_err(|err| Error::CreateDir(path_buf.clone(), err))?;
         fs::set_permissions(path, Permissions::from_mode(FOLDER_PERMISSIONS))
-            .map_err(|e| Error::Chmod(path_buf.clone(), e))?;
+            .map_err(|err| Error::Chmod(path_buf.clone(), err))?;
 
         #[cfg(target_arch = "x86_64")]
-        let folder_bytes_ptr = folder.as_ptr() as *const i8;
+        let folder_bytes_ptr = folder.as_ptr().cast::<i8>();
         #[cfg(target_arch = "aarch64")]
         let folder_bytes_ptr = folder.as_ptr();
+        // SAFETY: This is safe because folder was checked for a null-terminator.
         SyscallReturnCode(unsafe { libc::chown(folder_bytes_ptr, self.uid(), self.gid()) })
             .into_empty_result()
-            .map_err(|e| Error::ChangeFileOwner(path_buf, e))
+            .map_err(|err| Error::ChangeFileOwner(path_buf, err))
     }
 
     fn copy_exec_to_chroot(&mut self) -> Result<OsString> {
         let exec_file_name = self
             .exec_file_path
             .file_name()
-            .ok_or_else(|| Error::FileName(self.exec_file_path.clone()))?;
+            .ok_or_else(|| Error::ExtractFileName(self.exec_file_path.clone()))?;
         // We do a quick push here to get the global path of the executable inside the chroot,
         // without having to create a new PathBuf. We'll then do a pop to revert to the actual
         // chroot_dir right after the copy.
@@ -371,8 +391,9 @@ impl Env {
 
         // TODO: hard link instead of copy? This would save up disk space, but hard linking is
         // not always possible :(
-        fs::copy(&self.exec_file_path, &self.chroot_dir)
-            .map_err(|e| Error::Copy(self.exec_file_path.clone(), self.chroot_dir.clone(), e))?;
+        fs::copy(&self.exec_file_path, &self.chroot_dir).map_err(|err| {
+            Error::Copy(self.exec_file_path.clone(), self.chroot_dir.clone(), err)
+        })?;
 
         // Pop exec_file_name.
         self.chroot_dir.pop();
@@ -380,22 +401,13 @@ impl Env {
     }
 
     fn join_netns(path: &str) -> Result<()> {
-        // Not used `as_raw_fd` as it will create a dangling fd (object will be freed immediately) instead
-        // used `into_raw_fd` which provides underlying fd ownership to caller.
-        let netns_fd = File::open(path)
-            .map_err(|e| Error::FileOpen(PathBuf::from(path), e))?
-            .into_raw_fd();
+        // The fd backing the file will be automatically dropped at the end of the scope
+        let netns = File::open(path).map_err(|err| Error::FileOpen(PathBuf::from(path), err))?;
 
-        // Safe because we are passing valid parameters.
-        SyscallReturnCode(unsafe { libc::setns(netns_fd, libc::CLONE_NEWNET) })
+        // SAFETY: Safe because we are passing valid parameters.
+        SyscallReturnCode(unsafe { libc::setns(netns.as_raw_fd(), libc::CLONE_NEWNET) })
             .into_empty_result()
-            .map_err(Error::SetNetNs)?;
-
-        // Since we have ownership here, we also have to close the fd after joining the
-        // namespace. Safe because we are passing valid parameters.
-        SyscallReturnCode(unsafe { libc::close(netns_fd) })
-            .into_empty_result()
-            .map_err(Error::CloseNetNsFd)
+            .map_err(Error::SetNetNs)
     }
 
     fn exec_command(&self, chroot_exec_file: PathBuf) -> io::Error {
@@ -435,7 +447,7 @@ impl Env {
         let jailer_cache_dir =
             Path::new(self.chroot_dir()).join("sys/devices/system/cpu/cpu0/cache/");
         fs::create_dir_all(&jailer_cache_dir)
-            .map_err(|e| Error::CreateDir(jailer_cache_dir.to_owned(), e))?;
+            .map_err(|err| Error::CreateDir(jailer_cache_dir.to_owned(), err))?;
 
         for index in 0..(MAX_CACHE_LEVEL + 1) {
             let index_folder = format!("index{}", index);
@@ -450,10 +462,10 @@ impl Env {
             // We now create the destination folder in the jailer.
             let jailer_path = jailer_cache_dir.join(&index_folder);
             fs::create_dir_all(&jailer_path)
-                .map_err(|e| Error::CreateDir(jailer_path.to_owned(), e))?;
+                .map_err(|err| Error::CreateDir(jailer_path.to_owned(), err))?;
 
-            // We now read the contents of the current directory and copy the files we are interested in
-            // to the destination path.
+            // We now read the contents of the current directory and copy the files we are
+            // interested in to the destination path.
             for entry in FOLDER_HIERARCHY.iter() {
                 let host_cache_file = host_path.join(&entry);
                 let jailer_cache_file = jailer_path.join(&entry);
@@ -463,11 +475,12 @@ impl Env {
 
                 // We now change the permissions.
                 let dest_path_cstr = to_cstring(&jailer_cache_file)?;
+                // SAFETY: Safe because dest_path_cstr is null-terminated.
                 SyscallReturnCode(unsafe {
                     libc::chown(dest_path_cstr.as_ptr(), self.uid(), self.gid())
                 })
                 .into_empty_result()
-                .map_err(|e| Error::ChangeFileOwner(jailer_cache_file.to_owned(), e))?;
+                .map_err(|err| Error::ChangeFileOwner(jailer_cache_file.to_owned(), err))?;
             }
         }
         Ok(())
@@ -482,7 +495,7 @@ impl Env {
         let jailer_midr_el1_directory =
             Path::new(self.chroot_dir()).join("sys/devices/system/cpu/cpu0/regs/identification/");
         fs::create_dir_all(&jailer_midr_el1_directory)
-            .map_err(|e| Error::CreateDir(jailer_midr_el1_directory.to_owned(), e))?;
+            .map_err(|err| Error::CreateDir(jailer_midr_el1_directory.to_owned(), err))?;
 
         let host_midr_el1_file = PathBuf::from(format!("{}/midr_el1", HOST_MIDR_EL1_INFO));
         let jailer_midr_el1_file = jailer_midr_el1_directory.join("midr_el1");
@@ -493,9 +506,10 @@ impl Env {
 
         // Change the permissions.
         let dest_path_cstr = to_cstring(&jailer_midr_el1_file)?;
+        // SAFETY: Safe because `dest_path_cstr` is null-terminated.
         SyscallReturnCode(unsafe { libc::chown(dest_path_cstr.as_ptr(), self.uid(), self.gid()) })
             .into_empty_result()
-            .map_err(|e| Error::ChangeFileOwner(jailer_midr_el1_file.to_owned(), e))?;
+            .map_err(|err| Error::ChangeFileOwner(jailer_midr_el1_file.to_owned(), err))?;
 
         Ok(())
     }
@@ -527,17 +541,7 @@ impl Env {
 
         // If daemonization was requested, open /dev/null before chrooting.
         let dev_null = if self.daemonize {
-            // Safe because we use a constant null-terminated string and verify the result.
-            Some(
-                SyscallReturnCode(unsafe {
-                    libc::open(
-                        DEV_NULL_WITH_NUL.as_ptr() as *const libc::c_char,
-                        libc::O_RDWR,
-                    )
-                })
-                .into_result()
-                .map_err(Error::OpenDevNull)?,
-            )
+            Some(File::open("/dev/null").map_err(Error::OpenDevNull)?)
         } else {
             None
         };
@@ -579,21 +583,17 @@ impl Env {
             });
 
         // Daemonize before exec, if so required (when the dev_null variable != None).
-        if let Some(fd) = dev_null {
-            // Call setsid(). Safe because it's a library function.
+        if let Some(dev_null) = dev_null {
+            // Call setsid().
+            // SAFETY: Safe because it's a library function.
             SyscallReturnCode(unsafe { libc::setsid() })
                 .into_empty_result()
                 .map_err(Error::SetSid)?;
 
             // Replace the stdio file descriptors with the /dev/null fd.
-            dup2(fd, STDIN_FILENO)?;
-            dup2(fd, STDOUT_FILENO)?;
-            dup2(fd, STDERR_FILENO)?;
-
-            // Safe because we are passing valid parameters, and checking the result.
-            SyscallReturnCode(unsafe { libc::close(fd) })
-                .into_empty_result()
-                .map_err(Error::CloseDevNullFd)?;
+            dup2(dev_null.as_raw_fd(), STDIN_FILENO)?;
+            dup2(dev_null.as_raw_fd(), STDOUT_FILENO)?;
+            dup2(dev_null.as_raw_fd(), STDERR_FILENO)?;
         }
 
         // If specified, exec the provided binary into a new PID namespace.
@@ -607,14 +607,19 @@ impl Env {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::undocumented_unsafe_blocks)]
+
+    use std::os::linux::fs::MetadataExt;
+    use std::os::unix::ffi::OsStrExt;
+
+    use utils::tempdir::TempDir;
+    use utils::tempfile::TempFile;
+
     use super::*;
     use crate::build_arg_parser;
     use crate::cgroup::test_util::MockCgroupFs;
 
-    use std::os::linux::fs::MetadataExt;
-    use std::os::unix::ffi::OsStrExt;
-    use utils::tempdir::TempDir;
-    use utils::tempfile::TempFile;
+    const PSEUDO_EXEC_FILE_PATH: &str = "/tmp/pseudo_firecracker_exec_file";
 
     #[derive(Clone)]
     struct ArgVals<'a> {
@@ -633,9 +638,10 @@ mod tests {
 
     impl ArgVals<'_> {
         pub fn new() -> ArgVals<'static> {
+            File::create(PSEUDO_EXEC_FILE_PATH).unwrap();
             ArgVals {
                 id: "bd65600d-8669-4903-8a14-af88203add38",
-                exec_file: "/proc/cpuinfo",
+                exec_file: PSEUDO_EXEC_FILE_PATH,
                 uid: "1001",
                 gid: "1002",
                 chroot_base: "/",
@@ -719,7 +725,7 @@ mod tests {
     #[test]
     fn test_new_env() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
 
         let good_arg_vals = ArgVals::new();
         let arg_parser = build_arg_parser();
@@ -858,31 +864,68 @@ mod tests {
     #[test]
     fn test_dup2() {
         // Open /dev/kvm since it should be available anyway.
-        let fd1 = fs::File::open("/dev/kvm").unwrap().into_raw_fd();
+        let file1 = fs::File::open("/dev/kvm").unwrap();
         // We open a second file to make sure its associated fd is not used by something else.
-        let fd2 = fs::File::open("/dev/kvm").unwrap().into_raw_fd();
+        let file2 = fs::File::open("/dev/kvm").unwrap();
 
-        dup2(fd1, fd2).unwrap();
+        dup2(file1.as_raw_fd(), file2.as_raw_fd()).unwrap();
+    }
 
-        unsafe {
-            libc::close(fd1);
-        }
-        unsafe {
-            libc::close(fd2);
-        }
+    #[test]
+    fn test_validate_exec_file() {
+        // Success case
+        File::create(PSEUDO_EXEC_FILE_PATH).unwrap();
+        assert!(Env::validate_exec_file(PSEUDO_EXEC_FILE_PATH).is_ok());
+
+        // Error case 1: No such file exists
+        std::fs::remove_file(PSEUDO_EXEC_FILE_PATH).unwrap();
+        assert_eq!(
+            format!(
+                "{}",
+                Env::validate_exec_file(PSEUDO_EXEC_FILE_PATH).unwrap_err()
+            ),
+            format!(
+                "Failed to canonicalize path {}: No such file or directory (os error 2)",
+                PSEUDO_EXEC_FILE_PATH
+            )
+        );
+
+        // Error case 2: Not a file
+        std::fs::create_dir_all("/tmp/firecracker_test_dir").unwrap();
+        assert_eq!(
+            format!(
+                "{}",
+                Env::validate_exec_file("/tmp/firecracker_test_dir").unwrap_err()
+            ),
+            "/tmp/firecracker_test_dir is not a file"
+        );
+
+        // Error case 3: Filename without "firecracker"
+        File::create("/tmp/firecracker_test_dir/foobarbaz").unwrap();
+        assert_eq!(
+            format!(
+                "{}",
+                Env::validate_exec_file("/tmp/firecracker_test_dir/foobarbaz").unwrap_err()
+            ),
+            "Invalid filename. The filename of `--exec-file` option must contain \"firecracker\": \
+             foobarbaz"
+        );
+        std::fs::remove_file("/tmp/firecracker_test_dir/foobarbaz").unwrap();
+        std::fs::remove_dir_all("/tmp/firecracker_test_dir").unwrap();
     }
 
     #[test]
     fn test_setup_jailed_folder() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
         let env = create_env();
 
         // Error case: non UTF-8 paths.
         let bad_string: &[u8] = &[0, 102, 111, 111, 0]; // A leading nul followed by 'f', 'o', 'o'
         assert_eq!(
             format!("{}", env.setup_jailed_folder(bad_string).err().unwrap()),
-            "Failed to decode string from byte array: data provided contains an interior nul byte at byte pos 0"
+            "Failed to decode string from byte array: data provided contains an interior nul byte \
+             at byte pos 0"
         );
 
         // Error case: inaccessible path - can't be triggered with unit tests running as root.
@@ -925,7 +968,7 @@ mod tests {
         use std::os::unix::fs::FileTypeExt;
 
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
         let env = create_env();
 
         // Ensure path buffers without NULL-termination are handled well.
@@ -951,7 +994,7 @@ mod tests {
 
             // Ensure device's properties.
             let metadata = fs::metadata(dev_str).unwrap();
-            assert_eq!(metadata.file_type().is_char_device(), true);
+            assert!(metadata.file_type().is_char_device());
             assert_eq!(get_major(metadata.st_rdev()), major);
             assert_eq!(get_minor(metadata.st_rdev()), minor);
             assert_eq!(
@@ -978,18 +1021,18 @@ mod tests {
         let arg_parser = build_arg_parser();
         let mut args = arg_parser.arguments().clone();
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
 
         // Create tmp resources for `exec_file` and `chroot_base`.
-        let some_file = TempFile::new_with_prefix("/tmp/").unwrap();
-        let some_file_path = some_file.as_path().to_str().unwrap();
-        let some_file_name = some_file.as_path().file_name().unwrap();
+        File::create(PSEUDO_EXEC_FILE_PATH).unwrap();
+        let exec_file_path = PSEUDO_EXEC_FILE_PATH;
+        let exec_file_name = Path::new(exec_file_path).file_name().unwrap();
         let some_dir = TempDir::new().unwrap();
         let some_dir_path = some_dir.as_path().to_str().unwrap();
 
         let some_arg_vals = ArgVals {
             id: "bd65600d-8669-4903-8a14-af88203add38",
-            exec_file: some_file_path,
+            exec_file: exec_file_path,
             uid: "1001",
             gid: "1002",
             chroot_base: some_dir_path,
@@ -1000,7 +1043,7 @@ mod tests {
             resource_limits: Vec::new(),
             parent_cgroup: None,
         };
-        fs::write(some_file_path, "some_content").unwrap();
+        fs::write(exec_file_path, "some_content").unwrap();
         args.parse(&make_args(&some_arg_vals)).unwrap();
         let mut env = Env::new(&args, 0, 0).unwrap();
 
@@ -1009,10 +1052,10 @@ mod tests {
 
         assert_eq!(
             env.copy_exec_to_chroot().unwrap(),
-            some_file_name.to_os_string()
+            exec_file_name.to_os_string()
         );
 
-        let dest_path = env.chroot_dir.join(some_file_name);
+        let dest_path = env.chroot_dir.join(exec_file_name);
         // Check that `fs::copy()` copied src content and permission bits to destination.
         let metadata_src = fs::metadata(&env.exec_file_path).unwrap();
         let metadata_dest = fs::metadata(&dest_path).unwrap();
@@ -1053,7 +1096,7 @@ mod tests {
         let arg_parser = build_arg_parser();
         let good_arg_vals = ArgVals::new();
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
 
         // Cases that should fail
 
@@ -1183,7 +1226,7 @@ mod tests {
         // Check valid cases
         let resources = [FSIZE_ARG, NO_FILE_ARG];
         for resource in resources.iter() {
-            let arg = vec![resource.to_string() + &"=4098".to_string()];
+            let arg = vec![resource.to_string() + "=4098"];
             Env::parse_resource_limits(&mut resource_limits, &*arg).unwrap();
         }
     }
@@ -1192,7 +1235,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     fn test_copy_cache_info() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
 
         let env = create_env();
 
@@ -1219,7 +1262,7 @@ mod tests {
         let pid = 1;
 
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
 
         let mut env = create_env();
         env.save_exec_file_pid(pid, PathBuf::from(exec_file_name))

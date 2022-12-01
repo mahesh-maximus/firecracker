@@ -12,11 +12,10 @@ use logger::warn;
 use utils::byte_order;
 use vm_memory::{GuestAddress, GuestMemoryMmap};
 
-use super::device_status;
-use super::*;
+use super::{device_status, *};
 use crate::bus::BusDevice;
 
-//TODO crosvm uses 0 here, but IIRC virtio specified some other vendor id that should be used
+// TODO crosvm uses 0 here, but IIRC virtio specified some other vendor id that should be used
 const VENDOR_ID: u32 = 0;
 
 /// Interrupt flags (re: interrupt status & acknowledge registers).
@@ -24,10 +23,10 @@ const VENDOR_ID: u32 = 0;
 pub const VIRTIO_MMIO_INT_VRING: u32 = 0x01;
 pub const VIRTIO_MMIO_INT_CONFIG: u32 = 0x02;
 
-//required by the virtio mmio device register layout at offset 0 from base
+// required by the virtio mmio device register layout at offset 0 from base
 const MMIO_MAGIC_VALUE: u32 = 0x7472_6976;
 
-//current version specified by the mmio standard (legacy devices used 1 here)
+// current version specified by the mmio standard (legacy devices used 1 here)
 const MMIO_VERSION: u32 = 2;
 
 /// Implements the
@@ -236,7 +235,7 @@ impl BusDevice for MmioTransport {
                         features
                     }
                     0x34 => self.with_queue(0, |q| u32::from(q.get_max_size())),
-                    0x44 => self.with_queue(0, |q| q.ready as u32),
+                    0x44 => self.with_queue(0, |q| u32::from(q.ready)),
                     0x60 => self.interrupt_status.load(Ordering::SeqCst) as u32,
                     0x70 => self.device_status,
                     0xfc => self.config_generation,
@@ -329,10 +328,10 @@ impl BusDevice for MmioTransport {
 #[cfg(test)]
 pub(crate) mod tests {
     use utils::byte_order::{read_le_u32, write_le_u32};
-
-    use super::*;
     use utils::eventfd::EventFd;
     use vm_memory::GuestMemoryMmap;
+
+    use super::*;
 
     pub(crate) struct DummyDevice {
         acked_features: u64,
@@ -514,7 +513,7 @@ pub(crate) mod tests {
         assert_eq!(read_le_u32(&buf[..]), 16);
 
         d.read(0x44, &mut buf[..]);
-        assert_eq!(read_le_u32(&buf[..]), false as u32);
+        assert_eq!(read_le_u32(&buf[..]), u32::from(false));
 
         d.interrupt_status.store(111, Ordering::SeqCst);
         d.read(0x60, &mut buf[..]);
@@ -571,7 +570,8 @@ pub(crate) mod tests {
         d.write(0x20, &buf[..]);
         assert_eq!(d.locked_device().acked_features(), 0x0);
 
-        // Write to device specific configuration space should be ignored before setting device_status::DRIVER
+        // Write to device specific configuration space should be ignored before setting
+        // device_status::DRIVER
         let buf1 = vec![1; 0xeff];
         for i in (0..0xeff).rev() {
             let mut buf2 = vec![0; 0xeff];

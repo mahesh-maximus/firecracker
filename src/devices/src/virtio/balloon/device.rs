@@ -1,7 +1,6 @@
 // Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use serde::Serialize;
 use std::cmp;
 use std::io::Write;
 use std::result::Result;
@@ -9,20 +8,23 @@ use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ::timerfd::{ClockId, SetTimeFlags, TimerFd, TimerState};
+use logger::{error, IncMetric, METRICS};
+use serde::Serialize;
+use timerfd::{ClockId, SetTimeFlags, TimerFd, TimerState};
+use utils::eventfd::EventFd;
+use virtio_gen::virtio_blk::VIRTIO_F_VERSION_1;
+use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
 
-use ::logger::{error, IncMetric, METRICS};
-use ::utils::eventfd::EventFd;
-use ::virtio_gen::virtio_blk::VIRTIO_F_VERSION_1;
-use ::vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
-
-use super::*;
+use super::super::{ActivateResult, DeviceState, Queue, VirtioDevice, TYPE_BALLOON};
+use super::utils::{compact_page_frame_numbers, remove_range};
 use super::{
-    super::{ActivateResult, DeviceState, Queue, VirtioDevice, TYPE_BALLOON},
-    utils::{compact_page_frame_numbers, remove_range},
-    BALLOON_DEV_ID,
+    BALLOON_DEV_ID, DEFLATE_INDEX, INFLATE_INDEX, MAX_PAGES_IN_DESC, MAX_PAGE_COMPACT_BUFFER,
+    MIB_TO_4K_PAGES, NUM_QUEUES, QUEUE_SIZES, STATS_INDEX, VIRTIO_BALLOON_F_DEFLATE_ON_OOM,
+    VIRTIO_BALLOON_F_STATS_VQ, VIRTIO_BALLOON_PFN_SHIFT, VIRTIO_BALLOON_S_AVAIL,
+    VIRTIO_BALLOON_S_CACHES, VIRTIO_BALLOON_S_HTLB_PGALLOC, VIRTIO_BALLOON_S_HTLB_PGFAIL,
+    VIRTIO_BALLOON_S_MAJFLT, VIRTIO_BALLOON_S_MEMFREE, VIRTIO_BALLOON_S_MEMTOT,
+    VIRTIO_BALLOON_S_MINFLT, VIRTIO_BALLOON_S_SWAP_IN, VIRTIO_BALLOON_S_SWAP_OUT,
 };
-
 use crate::virtio::balloon::Error as BalloonError;
 use crate::virtio::{IrqTrigger, IrqType};
 
@@ -46,7 +48,7 @@ pub(crate) struct ConfigSpace {
     pub actual_pages: u32,
 }
 
-// Safe because ConfigSpace only contains plain data.
+// SAFETY: Safe because ConfigSpace only contains plain data.
 unsafe impl ByteValued for ConfigSpace {}
 
 // This structure needs the `packed` attribute, otherwise Rust will assume
@@ -58,11 +60,11 @@ struct BalloonStat {
     pub val: u64,
 }
 
-// Safe because BalloonStat only contains plain data.
+// SAFETY: Safe because BalloonStat only contains plain data.
 unsafe impl ByteValued for BalloonStat {}
 
 // BalloonStats holds statistics returned from the stats_queue.
-#[derive(Clone, Default, Debug, PartialEq, Serialize)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
 pub struct BalloonConfig {
     pub amount_mib: u32,
     pub deflate_on_oom: bool,
@@ -70,7 +72,7 @@ pub struct BalloonConfig {
 }
 
 // BalloonStats holds statistics returned from the stats_queue.
-#[derive(Clone, Default, Debug, PartialEq, Serialize)]
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BalloonStats {
     pub target_pages: u32,
@@ -263,7 +265,8 @@ impl Balloon {
                         // Skip descriptor.
                         continue;
                     }
-                    // Break loop if `pfn_buffer` will be overrun by adding all pfns from current desc.
+                    // Break loop if `pfn_buffer` will be overrun by adding all pfns from current
+                    // desc.
                     if MAX_PAGE_COMPACT_BUFFER - pfn_buffer_idx < len as usize / SIZE_OF_U32 {
                         queue.undo_pop();
                         break;
@@ -300,14 +303,14 @@ impl Balloon {
             // Remove the page ranges.
             for (page_frame_number, range_len) in page_ranges {
                 let guest_addr =
-                    GuestAddress((page_frame_number as u64) << VIRTIO_BALLOON_PFN_SHIFT);
+                    GuestAddress(u64::from(page_frame_number) << VIRTIO_BALLOON_PFN_SHIFT);
 
-                if let Err(e) = remove_range(
+                if let Err(err) = remove_range(
                     mem,
                     (guest_addr, u64::from(range_len) << VIRTIO_BALLOON_PFN_SHIFT),
                     self.restored,
                 ) {
-                    error!("Error removing memory range: {:?}", e);
+                    error!("Error removing memory range: {:?}", err);
                 }
             }
         }
@@ -362,7 +365,7 @@ impl Balloon {
                 // so we ignore the rest of it.
                 let addr = head
                     .addr
-                    .checked_add(index as u64)
+                    .checked_add(u64::from(index))
                     .ok_or(BalloonError::MalformedDescriptor)?;
                 let stat = mem
                     .read_obj::<BalloonStat>(addr)
@@ -380,9 +383,9 @@ impl Balloon {
     }
 
     pub(crate) fn signal_used_queue(&self) -> Result<(), BalloonError> {
-        self.irq_trigger.trigger_irq(IrqType::Vring).map_err(|e| {
+        self.irq_trigger.trigger_irq(IrqType::Vring).map_err(|err| {
             METRICS.balloon.event_fails.inc();
-            BalloonError::InterruptError(e)
+            BalloonError::InterruptError(err)
         })
     }
 
@@ -442,8 +445,8 @@ impl Balloon {
 
     pub fn update_timer_state(&mut self) {
         let timer_state = TimerState::Periodic {
-            current: Duration::from_secs(self.stats_polling_interval_s as u64),
-            interval: Duration::from_secs(self.stats_polling_interval_s as u64),
+            current: Duration::from_secs(u64::from(self.stats_polling_interval_s)),
+            interval: Duration::from_secs(u64::from(self.stats_polling_interval_s)),
         };
         self.stats_timer
             .set_state(timer_state, SetTimeFlags::Default);
@@ -584,6 +587,8 @@ impl VirtioDevice for Balloon {
 pub(crate) mod tests {
     use std::u32;
 
+    use vm_memory::GuestAddress;
+
     use super::super::CONFIG_SPACE_SIZE;
     use super::*;
     use crate::virtio::balloon::test_utils::{
@@ -592,7 +597,6 @@ pub(crate) mod tests {
     use crate::virtio::test_utils::{default_mem, VirtQueue};
     use crate::virtio::{VIRTQ_DESC_F_NEXT, VIRTQ_DESC_F_WRITE};
     use crate::{check_metric_after_block, report_balloon_event_fail};
-    use vm_memory::GuestAddress;
 
     impl Balloon {
         pub(crate) fn set_queue(&mut self, idx: usize, q: Queue) {
@@ -683,7 +687,7 @@ pub(crate) mod tests {
 
                 let features: u64 = (1u64 << VIRTIO_F_VERSION_1)
                     | ((if *deflate_on_oom { 1 } else { 0 }) << VIRTIO_BALLOON_F_DEFLATE_ON_OOM)
-                    | ((*stats_interval as u64) << VIRTIO_BALLOON_F_STATS_VQ);
+                    | ((u64::from(*stats_interval)) << VIRTIO_BALLOON_F_STATS_VQ);
 
                 assert_eq!(balloon.avail_features_by_page(0), features as u32);
                 assert_eq!(balloon.avail_features_by_page(1), (features >> 32) as u32);

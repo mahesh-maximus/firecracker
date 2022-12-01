@@ -3,9 +3,10 @@
 
 use std::io;
 
-use super::{RemoveRegionError, MAX_PAGE_COMPACT_BUFFER};
 use logger::error;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+
+use super::{RemoveRegionError, MAX_PAGE_COMPACT_BUFFER};
 
 /// This takes a vector of page frame numbers, and compacts them
 /// into ranges of consecutive pages. The result is a vector
@@ -83,9 +84,10 @@ pub(crate) fn remove_range(
         // This workaround is (only) needed after resuming from a snapshot because the guest memory
         // is mmaped from file as private and there is no `madvise` flag that works for this case.
         if restored {
+            // SAFETY: The address and length are known to be valid.
             let ret = unsafe {
                 libc::mmap(
-                    phys_address as *mut _,
+                    phys_address.cast(),
                     range_len as usize,
                     libc::PROT_READ | libc::PROT_WRITE,
                     libc::MAP_FIXED | libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
@@ -99,12 +101,10 @@ pub(crate) fn remove_range(
         };
 
         // Madvise the region in order to mark it as not used.
+        // SAFETY: The address and length are known to be valid.
         let ret = unsafe {
-            libc::madvise(
-                phys_address as *mut _,
-                range_len as usize,
-                libc::MADV_DONTNEED,
-            )
+            let range_len = range_len as usize;
+            libc::madvise(phys_address.cast(), range_len, libc::MADV_DONTNEED)
         };
         if ret < 0 {
             return Err(RemoveRegionError::MadviseFail(io::Error::last_os_error()));
@@ -118,8 +118,9 @@ pub(crate) fn remove_range(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use vm_memory::Bytes;
+
+    use super::*;
 
     /// This asserts that $lhs matches $rhs.
     macro_rules! assert_match {
@@ -135,15 +136,13 @@ mod tests {
 
         // Test single compact range.
         assert_eq!(
-            compact_page_frame_numbers(&mut (0_u32..100_u32).collect::<Vec<u32>>().as_mut_slice()),
+            compact_page_frame_numbers((0_u32..100_u32).collect::<Vec<u32>>().as_mut_slice()),
             vec![(0, 100)]
         );
 
         // `compact_page_frame_numbers` works even when given out of order input.
         assert_eq!(
-            compact_page_frame_numbers(
-                &mut (0_u32..100_u32).rev().collect::<Vec<u32>>().as_mut_slice()
-            ),
+            compact_page_frame_numbers((0_u32..100_u32).rev().collect::<Vec<u32>>().as_mut_slice()),
             vec![(0, 100)]
         );
 
@@ -194,15 +193,12 @@ mod tests {
 
         // Check that the first page is zeroed.
         let mut actual_page = vec![0u8; page_size];
-        mem.read(&mut actual_page.as_mut_slice(), GuestAddress(0))
+        mem.read(actual_page.as_mut_slice(), GuestAddress(0))
             .unwrap();
         assert_eq!(vec![0u8; page_size], actual_page);
         // Check that the second page still contains ones.
-        mem.read(
-            &mut actual_page.as_mut_slice(),
-            GuestAddress(page_size as u64),
-        )
-        .unwrap();
+        mem.read(actual_page.as_mut_slice(), GuestAddress(page_size as u64))
+            .unwrap();
         assert_eq!(vec![1u8; page_size], actual_page);
 
         // Malformed range: the len is too big.
@@ -242,15 +238,12 @@ mod tests {
 
         // Check that the first page is zeroed.
         let mut actual_page = vec![0u8; page_size];
-        mem.read(&mut actual_page.as_mut_slice(), GuestAddress(0))
+        mem.read(actual_page.as_mut_slice(), GuestAddress(0))
             .unwrap();
         assert_eq!(vec![0u8; page_size], actual_page);
         // Check that the second page still contains ones.
-        mem.read(
-            &mut actual_page.as_mut_slice(),
-            GuestAddress(page_size as u64),
-        )
-        .unwrap();
+        mem.read(actual_page.as_mut_slice(), GuestAddress(page_size as u64))
+            .unwrap();
         assert_eq!(vec![1u8; page_size], actual_page);
 
         // Malformed range: the len is too big.
@@ -277,12 +270,14 @@ mod tests {
     use proptest::prelude::*;
 
     fn random_pfn_u32_max() -> impl Strategy<Value = Vec<u32>> {
-        // Create a randomly sized vec (max MAX_PAGE_COMPACT_BUFFER elements) filled with random u32 elements.
+        // Create a randomly sized vec (max MAX_PAGE_COMPACT_BUFFER elements) filled with random u32
+        // elements.
         prop::collection::vec(0..std::u32::MAX, 0..MAX_PAGE_COMPACT_BUFFER)
     }
 
     fn random_pfn_100() -> impl Strategy<Value = Vec<u32>> {
-        // Create a randomly sized vec (max MAX_PAGE_COMPACT_BUFFER/8) filled with random u32 elements (0 - 100).
+        // Create a randomly sized vec (max MAX_PAGE_COMPACT_BUFFER/8) filled with random u32
+        // elements (0 - 100).
         prop::collection::vec(0..100u32, 0..MAX_PAGE_COMPACT_BUFFER / 8)
     }
 

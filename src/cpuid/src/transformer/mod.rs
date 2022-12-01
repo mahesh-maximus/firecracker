@@ -7,8 +7,7 @@ pub mod intel;
 
 pub use kvm_bindings::{kvm_cpuid_entry2, CpuId};
 
-use crate::brand_string::BrandString;
-use crate::brand_string::Reg as BsReg;
+use crate::brand_string::{BrandString, Reg as BsReg};
 use crate::common::get_vendor_id_from_host;
 
 /// Structure containing the specifications of the VM
@@ -31,13 +30,13 @@ impl VmSpec {
     /// Creates a new instance of VmSpec with the specified parameters
     /// The brand string is deduced from the vendor_id
     pub fn new(cpu_index: u8, cpu_count: u8, smt: bool) -> Result<VmSpec, Error> {
-        let cpu_vendor_id = get_vendor_id_from_host().map_err(Error::InternalError)?;
+        let cpu_vendor_id = get_vendor_id_from_host()?;
 
         Ok(VmSpec {
             cpu_vendor_id,
             cpu_index,
             cpu_count,
-            cpu_bits: (cpu_count > 1 && smt) as u8,
+            cpu_bits: u8::from(cpu_count > 1 && smt),
             brand_string: BrandString::from_vendor_id(&cpu_vendor_id),
         })
     }
@@ -54,15 +53,19 @@ impl VmSpec {
 }
 
 /// Errors associated with processing the CPUID leaves.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum Error {
     /// A FamStructWrapper operation has failed
-    FamError(utils::fam::Error),
+    #[error("A FamStructWrapper operation has failed.")]
+    Fam(utils::fam::Error),
     /// A call to an internal helper method failed
-    InternalError(super::common::Error),
+    #[error("A call to an internal helper method failed: {0}")]
+    InternalError(#[from] super::common::Error),
     /// The operation is not permitted for the current vendor
+    #[error("The operation is not permitted for the current vendor.")]
     InvalidVendor,
     /// The maximum number of addressable logical CPUs cannot be stored in an `u8`.
+    #[error("The maximum number of addressable logical CPUs cannot be stored in an `u8`.")]
     VcpuCountOverflow,
 }
 

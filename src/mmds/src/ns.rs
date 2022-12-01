@@ -10,7 +10,6 @@ use std::num::NonZeroUsize;
 use std::result::Result;
 use std::sync::{Arc, Mutex};
 
-use crate::Mmds;
 use dumbo::pdu::arp::{
     test_speculative_tpa, Error as ArpFrameError, EthIPv4ArpFrame, ETH_IPV4_FRAME_LEN,
 };
@@ -22,11 +21,13 @@ use dumbo::pdu::ipv4::{
 };
 use dumbo::pdu::tcp::Error as TcpSegmentError;
 use dumbo::pdu::Incomplete;
-use dumbo::tcp::handler::{self, RecvEvent, TcpIPv4Handler, WriteEvent};
+use dumbo::tcp::handler::{RecvEvent, TcpIPv4Handler, WriteEvent, WriteNextError};
 use dumbo::tcp::NextSegmentStatus;
 use logger::{IncMetric, METRICS};
 use utils::net::mac::MacAddr;
 use utils::time::timestamp_cycles;
+
+use crate::Mmds;
 
 const DEFAULT_MAC_ADDR: &str = "06:01:23:45:67:01";
 const DEFAULT_IPV4_ADDR: [u8; 4] = [169, 254, 169, 254];
@@ -34,6 +35,7 @@ const DEFAULT_TCP_PORT: u16 = 80;
 const DEFAULT_MAX_CONNECTIONS: usize = 30;
 const DEFAULT_MAX_PENDING_RESETS: usize = 100;
 
+#[derive(derive_more::From)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 enum WriteArpFrameError {
     NoPendingArpReply,
@@ -41,20 +43,13 @@ enum WriteArpFrameError {
     Ethernet(EthernetFrameError),
 }
 
+#[derive(derive_more::From)]
 #[cfg_attr(test, derive(Debug, PartialEq))]
 enum WritePacketError {
     IPv4Packet(IPv4PacketError),
     Ethernet(EthernetFrameError),
     TcpSegment(TcpSegmentError),
-}
-
-impl From<handler::WriteNextError> for WritePacketError {
-    fn from(error: handler::WriteNextError) -> Self {
-        match error {
-            handler::WriteNextError::IPv4Packet(inner) => WritePacketError::IPv4Packet(inner),
-            handler::WriteNextError::TcpSegment(inner) => WritePacketError::TcpSegment(inner),
-        }
-    }
+    WriteNext(WriteNextError),
 }
 
 pub struct MmdsNetworkStack {
@@ -260,9 +255,7 @@ impl MmdsNetworkStack {
             .pending_arp_reply_dest
             .ok_or(WriteArpFrameError::NoPendingArpReply)?;
 
-        let mut eth_unsized = self
-            .prepare_eth_unsized(buf, ETHERTYPE_ARP)
-            .map_err(WriteArpFrameError::Ethernet)?;
+        let mut eth_unsized = self.prepare_eth_unsized(buf, ETHERTYPE_ARP)?;
 
         let arp_len = EthIPv4ArpFrame::write_reply(
             eth_unsized
@@ -274,8 +267,7 @@ impl MmdsNetworkStack {
             self.ipv4_addr,
             self.remote_mac_addr,
             arp_reply_dest,
-        )
-        .map_err(WriteArpFrameError::Arp)?
+        )?
         .len();
 
         Ok(Some(
@@ -285,9 +277,7 @@ impl MmdsNetworkStack {
     }
 
     fn write_packet(&mut self, buf: &mut [u8]) -> Result<Option<NonZeroUsize>, WritePacketError> {
-        let mut eth_unsized = self
-            .prepare_eth_unsized(buf, ETHERTYPE_IPV4)
-            .map_err(WritePacketError::Ethernet)?;
+        let mut eth_unsized = self.prepare_eth_unsized(buf, ETHERTYPE_IPV4)?;
 
         let (maybe_len, event) = self
             .tcp_handler
@@ -317,8 +307,9 @@ impl MmdsNetworkStack {
 mod tests {
     use std::str::FromStr;
 
-    use super::*;
     use dumbo::pdu::tcp::{Flags as TcpFlags, TcpSegment};
+
+    use super::*;
 
     // We use LOCALHOST here because const new() is not stable yet, so just reuse this const, since
     // all we're interested in is having some address different from the MMDS one.
@@ -505,7 +496,7 @@ mod tests {
         // Let's send a TCP SYN into the ns.
         {
             let len = ns.write_incoming_tcp_segment(buf.as_mut(), mmds_addr, TcpFlags::SYN);
-            assert_eq!(ns.detour_frame(&buf[..len]), true);
+            assert!(ns.detour_frame(&buf[..len]));
         }
 
         // We should be getting a SYNACK out of the ns in response.
@@ -571,7 +562,7 @@ mod tests {
         eth = EthernetFrame::write_incomplete(buf.as_mut(), mac, mac, ETHERTYPE_ARP).unwrap();
         IPv4Packet::from_bytes_unchecked(eth.inner_mut().payload_mut()).set_destination_address(ip);
 
-        assert_eq!(false, ns.detour_frame(&buf[..len]));
+        assert!(!ns.detour_frame(&buf[..len]));
     }
 
     #[test]
@@ -597,6 +588,6 @@ mod tests {
         eth = EthernetFrame::write_incomplete(buf.as_mut(), mac, mac, ETHERTYPE_IPV4).unwrap();
         let mut arp = EthIPv4ArpFrame::from_bytes_unchecked(eth.inner_mut().payload_mut());
         arp.set_tpa(ip);
-        assert_eq!(false, ns.detour_frame(&buf[..len]));
+        assert!(!ns.detour_frame(&buf[..len]));
     }
 }

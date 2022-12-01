@@ -6,16 +6,14 @@
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::Duration;
-use timerfd::{SetTimeFlags, TimerState};
 
 use snapshot::Persist;
+use timerfd::{SetTimeFlags, TimerState};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
-
 use vm_memory::GuestMemoryMmap;
 
 use super::*;
-
 use crate::virtio::balloon::device::{BalloonStats, ConfigSpace};
 use crate::virtio::persist::VirtioDeviceState;
 use crate::virtio::{DeviceState, TYPE_BALLOON};
@@ -147,8 +145,8 @@ impl Persist<'_> for Balloon {
 
                 // Restart timer if needed.
                 let timer_state = TimerState::Periodic {
-                    current: Duration::from_secs(state.stats_polling_interval_s as u64),
-                    interval: Duration::from_secs(state.stats_polling_interval_s as u64),
+                    current: Duration::from_secs(u64::from(state.stats_polling_interval_s)),
+                    interval: Duration::from_secs(u64::from(state.stats_polling_interval_s)),
                 };
                 balloon
                     .stats_timer
@@ -162,12 +160,12 @@ impl Persist<'_> for Balloon {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
     use crate::virtio::device::VirtioDevice;
-    use crate::virtio::TYPE_BALLOON;
-
     use crate::virtio::test_utils::default_mem;
-    use std::sync::atomic::Ordering;
+    use crate::virtio::TYPE_BALLOON;
 
     #[test]
     fn test_persistence() {

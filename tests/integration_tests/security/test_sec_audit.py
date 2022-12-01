@@ -12,8 +12,7 @@ from framework import defs
 
 @pytest.mark.skipif(
     get_cpu_vendor() != CpuVendor.INTEL,
-    reason="The audit is based on cargo.lock which "
-           "is identical on all platforms"
+    reason="The audit is based on cargo.lock which " "is identical on all platforms",
 )
 def test_cargo_audit():
     """
@@ -23,4 +22,6 @@ def test_cargo_audit():
     """
     # Run command and raise exception if non-zero return code
     utils.run_cmd(
-        'cargo audit --deny warnings -q', cwd=defs.FC_WORKSPACE_DIR)
+        "cargo audit --deny warnings -q  --ignore RUSTSEC-2021-0145",
+        cwd=defs.FC_WORKSPACE_DIR,
+    )

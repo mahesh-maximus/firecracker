@@ -1,7 +1,8 @@
 // Copyright 2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::{convert::TryInto, sync::Arc};
+use std::convert::TryInto;
+use std::sync::Arc;
 
 use logger::{warn, IncMetric, RTCDeviceMetrics, METRICS};
 
@@ -10,7 +11,6 @@ use crate::BusDevice;
 pub type RTCDevice = vm_superio::Rtc<Arc<RTCDeviceMetrics>>;
 
 // Implements Bus functions for AMBA PL031 RTC device
-#[cfg(target_arch = "aarch64")]
 impl BusDevice for RTCDevice {
     fn read(&mut self, offset: u64, data: &mut [u8]) {
         if data.len() == 4 {
@@ -43,11 +43,12 @@ impl BusDevice for RTCDevice {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use logger::IncMetric;
     use vm_superio::Rtc;
 
     use super::*;
-    use std::sync::Arc;
 
     #[test]
     fn test_rtc_device() {

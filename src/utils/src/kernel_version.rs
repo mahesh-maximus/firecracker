@@ -6,7 +6,7 @@ use std::result::Result;
 
 use libc::{uname, utsname};
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum Error {
     Uname(IoError),
     InvalidUtf8(std::string::FromUtf8Error),
@@ -14,7 +14,7 @@ pub enum Error {
     InvalidInt(std::num::ParseIntError),
 }
 
-#[derive(PartialEq, PartialOrd)]
+#[derive(PartialEq, Eq, PartialOrd)]
 #[cfg_attr(test, derive(Debug))]
 pub struct KernelVersion {
     major: u16,
@@ -40,16 +40,16 @@ impl KernelVersion {
             machine: [0; 65],
             domainname: [0; 65],
         };
+        // SAFETY: Safe because the parameters are valid.
         let res = unsafe { uname((&mut name) as *mut utsname) };
 
         if res < 0 {
             return Err(Error::Uname(IoError::last_os_error()));
         }
 
-        Self::parse(
-            String::from_utf8(name.release.iter().map(|c| *c as u8).collect())
-                .map_err(Error::InvalidUtf8)?,
-        )
+        Self::parse(String::from_utf8(
+            name.release.iter().map(|c| *c as u8).collect(),
+        )?)
     }
 
     fn parse(release: String) -> Result<Self, Error> {
@@ -60,14 +60,14 @@ impl KernelVersion {
         let mut patch = tokens.next().ok_or(Error::InvalidFormat)?;
 
         // Parse the `patch`, since it may contain other tokens as well.
-        if let Some(index) = patch.find(|c: char| !c.is_digit(10)) {
+        if let Some(index) = patch.find(|c: char| !c.is_ascii_digit()) {
             patch = &patch[..index];
         }
 
         Ok(Self {
-            major: major.parse().map_err(Error::InvalidInt)?,
-            minor: minor.parse().map_err(Error::InvalidInt)?,
-            patch: patch.parse().map_err(Error::InvalidInt)?,
+            major: major.parse()?,
+            minor: minor.parse()?,
+            patch: patch.parse()?,
         })
     }
 }

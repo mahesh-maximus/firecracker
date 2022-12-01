@@ -48,8 +48,8 @@ impl CgroupBuilder {
         };
 
         // search PROC_MOUNTS for cgroup mount points
-        let f =
-            File::open(PROC_MOUNTS).map_err(|e| Error::FileOpen(PathBuf::from(PROC_MOUNTS), e))?;
+        let f = File::open(PROC_MOUNTS)
+            .map_err(|err| Error::FileOpen(PathBuf::from(PROC_MOUNTS), err))?;
 
         // Regex courtesy of Filippo.
         // This will match on each line from /proc/mounts for both v1 and v2 mount points.
@@ -60,16 +60,16 @@ impl CgroupBuilder {
         //
         // This Regex will extract:
         //      * "/sys/fs/cgroup/unified" in the "dir" capture group.
-        //      * "2" in the "ver" capture group as the cgroup version taken from "cgroup2";
-        //          for v1, the "ver" capture group will be empty (len = 0).
+        //      * "2" in the "ver" capture group as the cgroup version taken from "cgroup2"; for v1,
+        //        the "ver" capture group will be empty (len = 0).
         //      * "[...],relatime,cpu,cpuacct" in the "options" capture group; this is used for
-        //          cgroupv1 to determine what controllers are mounted at the location.
+        //        cgroupv1 to determine what controllers are mounted at the location.
         let re = Regex::new(
             r"^([a-z2]*)[[:space:]](?P<dir>.*)[[:space:]]cgroup(?P<ver>2?)[[:space:]](?P<options>.*)[[:space:]]0[[:space:]]0$",
         ).map_err(Error::RegEx)?;
 
         for l in BufReader::new(f).lines() {
-            let l = l.map_err(|e| Error::ReadLine(PathBuf::from(PROC_MOUNTS), e))?;
+            let l = l.map_err(|err| Error::ReadLine(PathBuf::from(PROC_MOUNTS), err))?;
             if let Some(capture) = re.captures(&l) {
                 if ver == 2 && capture["ver"].len() == 1 {
                     // Found the cgroupv2 unified mountpoint; with cgroupsv2 there is only one
@@ -110,9 +110,9 @@ impl CgroupBuilder {
         match self.version {
             1 => {
                 let controller = get_controller_from_filename(&file)?;
-                let path = self.get_v1_hierarchy_path(&controller)?;
+                let path = self.get_v1_hierarchy_path(controller)?;
 
-                let cgroup = CgroupV1::new(file, value, id, &parent_cg, &path)?;
+                let cgroup = CgroupV1::new(file, value, id, parent_cg, path)?;
                 Ok(Box::new(cgroup))
             }
             2 => {
@@ -123,7 +123,7 @@ impl CgroupBuilder {
                     .get("unified")
                     .ok_or_else(|| Error::CgroupHierarchyMissing("unified".to_string()))?;
 
-                let cgroup = CgroupV2::new(file, value, id, &parent_cg, &path)?;
+                let cgroup = CgroupV2::new(file, value, id, parent_cg, path)?;
                 Ok(Box::new(cgroup))
             }
             _ => Err(Error::CgroupInvalidVersion(self.version.to_string())),
@@ -136,14 +136,13 @@ impl CgroupBuilder {
     fn get_v1_hierarchy_path(&mut self, controller: &str) -> Result<&PathBuf> {
         // First try and see if the path is already discovered.
         match self.hierarchies.entry(controller.to_string()) {
-            Occupied(e) => Ok(e.into_mut()),
-            Vacant(e) => {
+            Occupied(entry) => Ok(entry.into_mut()),
+            Vacant(entry) => {
                 // Since the path for this controller type was not already discovered
                 // we need to search through the mount points to find it
                 let mut path = None;
                 for m in self.mount_points.iter() {
-                    let v: Vec<&str> = m.options.split(',').collect();
-                    if v.contains(&controller) {
+                    if m.options.split(',').any(|x| x == controller) {
                         path = Some(PathBuf::from(&m.dir));
                         break;
                     }
@@ -151,7 +150,7 @@ impl CgroupBuilder {
                 // It's possible that the controller is not mounted or a bad controller
                 // name was specified. Return an error in this case
                 match path {
-                    Some(p) => Ok(e.insert(p)),
+                    Some(p) => Ok(entry.insert(p)),
                     None => Err(Error::CgroupControllerUnavailable(controller.to_string())),
                 }
             }
@@ -201,13 +200,13 @@ pub trait Cgroup {
 
 // There is also a potential race condition mentioned below. Here is what it refers to: let's say we
 // start multiple jailer processes, and one of them calls
-// inherit_from_parent_aux(/A/<parent_cgroup>/id1, file, true), and hits case number 3) from the list
-// above, thus recursively calling inherit_from_parent_aux(/A/<parent_cgroup>, file, false). It's
-// entirely possible there was another process in the exact same situations, and that process
-// gets to write something to /A/<parent_cgroup>/file first. In this case, the recursive call made by
-// the first process to inherit_from_parent_aux(/A/<parent_cgroup>, file, false) may fail when writing
-// to /A/<parent_cgroup>/file, but we can still continue, because step 4) only cares about the file
-// no longer being empty, regardless of who actually got to populated its contents.
+// inherit_from_parent_aux(/A/<parent_cgroup>/id1, file, true), and hits case number 3) from the
+// list above, thus recursively calling inherit_from_parent_aux(/A/<parent_cgroup>, file, false).
+// It's entirely possible there was another process in the exact same situations, and that process
+// gets to write something to /A/<parent_cgroup>/file first. In this case, the recursive call made
+// by the first process to inherit_from_parent_aux(/A/<parent_cgroup>, file, false) may fail when
+// writing to /A/<parent_cgroup>/file, but we can still continue, because step 4) only cares about
+// the file no longer being empty, regardless of who actually got to populated its contents.
 
 fn inherit_from_parent_aux(path: &mut PathBuf, file_name: &str, retry_depth: u16) -> Result<()> {
     // The function with_file_name() replaces the last component of a path with the given name.
@@ -297,7 +296,7 @@ impl Cgroup for CgroupV1 {
 
         // Create the cgroup directory for the controller.
         fs::create_dir_all(&self.base.location)
-            .map_err(|e| Error::CreateDir(self.base.location.clone(), e))?;
+            .map_err(|err| Error::CreateDir(self.base.location.clone(), err))?;
 
         // Write the corresponding cgroup value. inherit_from_parent is used to
         // correctly propagate the value if not defined.
@@ -339,7 +338,7 @@ impl CgroupV2 {
             }
         };
 
-        Self::write_all_subtree_control(&parent, &controller)?;
+        Self::write_all_subtree_control(&parent, controller)?;
         writeln_special(&cg_subtree_ctrl, format!("+{}", &controller))
     }
 
@@ -356,8 +355,7 @@ impl CgroupV2 {
         };
 
         for l in BufReader::new(f).lines().flatten() {
-            let controllers: Vec<&str> = l.split(' ').collect();
-            if controllers.contains(&controller) {
+            if l.split(' ').any(|x| x == controller) {
                 return true;
             }
         }
@@ -396,12 +394,12 @@ impl Cgroup for CgroupV2 {
 
         // Create the cgroup directory for the controller.
         fs::create_dir_all(&self.0.location)
-            .map_err(|e| Error::CreateDir(self.0.location.clone(), e))?;
+            .map_err(|err| Error::CreateDir(self.0.location.clone(), err))?;
 
         // Ok to unwrap since the path was just created.
         let parent = location.parent().unwrap();
         // Enable the controller in all parent directories
-        CgroupV2::write_all_subtree_control(&parent, &controller)?;
+        CgroupV2::write_all_subtree_control(&parent, controller)?;
 
         location.push(&self.0.file);
         writeln_special(location, &self.0.value)?;
@@ -478,7 +476,7 @@ pub mod test_util {
                 Self::MOCK_SYS_CGROUPS_DIR
             )?;
             let cg_unified_path = PathBuf::from(format!("{}/unified", Self::MOCK_SYS_CGROUPS_DIR));
-            let _ = fs::create_dir_all(&cg_unified_path)?;
+            fs::create_dir_all(&cg_unified_path)?;
             Self::create_file_with_contents(
                 cg_unified_path.join("cgroup.controllers"),
                 "cpuset cpu io memory pids",
@@ -524,10 +522,11 @@ mod tests {
     use std::io::{BufReader, Write};
     use std::path::PathBuf;
 
-    use super::*;
-    use crate::cgroup::test_util::MockCgroupFs;
     use utils::tempdir::TempDir;
     use utils::tempfile::TempFile;
+
+    use super::*;
+    use crate::cgroup::test_util::MockCgroupFs;
 
     // Utility function to read the first line in a file
     fn read_first_line<P>(filename: P) -> std::result::Result<String, std::io::Error>
@@ -551,23 +550,23 @@ mod tests {
     #[test]
     fn test_cgroup_builder_v1() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
         let builder = CgroupBuilder::new(1);
-        assert!(!builder.is_err());
+        assert!(builder.is_ok());
     }
 
     #[test]
     fn test_cgroup_builder_v2() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v2_mounts().is_err());
+        assert!(mock_cgroups.add_v2_mounts().is_ok());
         let builder = CgroupBuilder::new(2);
-        assert!(!builder.is_err());
+        assert!(builder.is_ok());
     }
 
     #[test]
     fn test_cgroup_builder_v2_with_v1_mounts() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
         let builder = CgroupBuilder::new(2);
         assert!(builder.is_err());
     }
@@ -575,7 +574,7 @@ mod tests {
     #[test]
     fn test_cgroup_builder_v1_with_v2_mounts() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v2_mounts().is_err());
+        assert!(mock_cgroups.add_v2_mounts().is_ok());
         let builder = CgroupBuilder::new(1);
         assert!(builder.is_err());
     }
@@ -583,8 +582,8 @@ mod tests {
     #[test]
     fn test_cgroup_build() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
-        assert!(!mock_cgroups.add_v2_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
+        assert!(mock_cgroups.add_v2_mounts().is_ok());
 
         for v in &[1, 2] {
             let mut builder = CgroupBuilder::new(*v).unwrap();
@@ -595,15 +594,15 @@ mod tests {
                 "101",
                 Path::new("fc_test_cg"),
             );
-            assert!(!cg.is_err());
+            assert!(cg.is_ok());
         }
     }
 
     #[test]
     fn test_cgroup_build_invalid() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v1_mounts().is_err());
-        assert!(!mock_cgroups.add_v2_mounts().is_err());
+        assert!(mock_cgroups.add_v1_mounts().is_ok());
+        assert!(mock_cgroups.add_v2_mounts().is_ok());
 
         for v in &[1, 2] {
             let mut builder = CgroupBuilder::new(*v).unwrap();
@@ -620,9 +619,9 @@ mod tests {
     #[test]
     fn test_cgroup_v2_write_value() {
         let mut mock_cgroups = MockCgroupFs::new().unwrap();
-        assert!(!mock_cgroups.add_v2_mounts().is_err());
+        assert!(mock_cgroups.add_v2_mounts().is_ok());
         let builder = CgroupBuilder::new(2);
-        assert!(!builder.is_err());
+        assert!(builder.is_ok());
 
         let mut builder = CgroupBuilder::new(2).unwrap();
         let cg = builder.new_cgroup(
@@ -631,7 +630,7 @@ mod tests {
             "101",
             Path::new("fc_test_cgv2"),
         );
-        assert!(!cg.is_err());
+        assert!(cg.is_ok());
         let cg = cg.unwrap();
 
         let cg_root = PathBuf::from(format!("{}/unified", MockCgroupFs::MOCK_SYS_CGROUPS_DIR));
@@ -650,7 +649,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!cg.write_value().is_err());
+        assert!(cg.write_value().is_ok());
 
         // check that the value was written correctly
         assert!(cg_root.join("fc_test_cgv2/101/cpuset.mems").exists());

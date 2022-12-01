@@ -249,7 +249,7 @@ The session must start with an HTTP `PUT` request that generates the session tok
 In order to be successful, the request must respect the following constraints:
 
 - must be directed towards `/latest/api/token` path
-- must contain a `X-ametadata-token-ttl-seconds` header specifying the token lifetime
+- must contain a `X-metadata-token-ttl-seconds` header specifying the token lifetime
   in seconds. The value cannot be lower than 1 or greater than 21600 (6 hours).
 - must not contain a `X-Forwarded-For` header.
 
@@ -290,7 +290,7 @@ for restoring does not support persisting the version, the default will be used.
 
 ### MMDS formats
 
-The response format can be JSON (experimental) or IMDS. The IMDS documentation
+The response format can be JSON or IMDS. The IMDS documentation
 can be found [here](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-metadata.html).
 The output format can be selected by specifying the optional `Accept` header.
 Using `Accept: application/json` will format the output to JSON, while using

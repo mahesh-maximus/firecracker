@@ -2,16 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Auxiliary module for configuring the logger.
-use serde::{de, Deserialize, Deserializer, Serialize};
 use std::fmt::{Display, Formatter};
 use std::path::PathBuf;
 
+use logger::{LevelFilter, LOGGER};
+use serde::{de, Deserialize, Deserializer, Serialize};
+
 use super::{open_file_nonblock, FcLineWriter};
 use crate::vmm_config::instance_info::InstanceInfo;
-use logger::{LevelFilter, LOGGER};
 
 /// Enum used for setting the log level.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub enum LoggerLevel {
     /// When the level is set to `Error`, the logger will only contain entries
     /// that come from the `error` macro.
@@ -73,7 +74,7 @@ where
 }
 
 /// Strongly typed structure used to describe the logger.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LoggerConfig {
     /// Named pipe or file used as output for logs.
@@ -120,7 +121,7 @@ impl Display for LoggerConfigError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         use self::LoggerConfigError::*;
         match *self {
-            InitializationFailure(ref err_msg) => write!(f, "{}", err_msg.replace("\"", "")),
+            InitializationFailure(ref err_msg) => write!(f, "{}", err_msg.replace('\"', "")),
         }
     }
 }
@@ -137,7 +138,7 @@ pub fn init_logger(
 
     let writer = FcLineWriter::new(
         open_file_nonblock(&logger_cfg.log_path)
-            .map_err(|e| LoggerConfigError::InitializationFailure(e.to_string()))?,
+            .map_err(|err| LoggerConfigError::InitializationFailure(err.to_string()))?,
     );
     LOGGER
         .init(
@@ -147,19 +148,20 @@ pub fn init_logger(
             ),
             Box::new(writer),
         )
-        .map_err(|e| LoggerConfigError::InitializationFailure(e.to_string()))
+        .map_err(|err| LoggerConfigError::InitializationFailure(err.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader};
 
-    use super::*;
     use devices::pseudo::BootTimer;
     use devices::BusDevice;
     use logger::warn;
     use utils::tempfile::TempFile;
     use utils::time::TimestampUs;
+
+    use super::*;
 
     #[test]
     fn test_init_logger() {
@@ -237,8 +239,8 @@ mod tests {
             LoggerConfig::new(PathBuf::from("log"), LoggerLevel::Debug, false, true);
         assert_eq!(logger_config.log_path, PathBuf::from("log"));
         assert_eq!(logger_config.level, LoggerLevel::Debug);
-        assert_eq!(logger_config.show_level, false);
-        assert_eq!(logger_config.show_log_origin, true);
+        assert!(!logger_config.show_level);
+        assert!(logger_config.show_log_origin);
     }
 
     #[test]

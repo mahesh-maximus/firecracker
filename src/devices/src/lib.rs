@@ -5,6 +5,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
+#![warn(clippy::ptr_as_ptr)]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::cast_lossless)]
 //! Emulates virtual and hardware devices.
 use std::io;
 
@@ -13,9 +16,10 @@ pub mod legacy;
 pub mod pseudo;
 pub mod virtio;
 
+use logger::{error, IncMetric, METRICS};
+
 pub use self::bus::{Bus, BusDevice, Error as BusError};
 use crate::virtio::{QueueError, VsockError};
-use logger::{error, IncMetric, METRICS};
 
 // Function used for reporting error in terms of logging
 // but also in terms of METRICS net event fails.

@@ -5,17 +5,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use std::{
-    fmt::{Display, Formatter},
-    result,
-};
+use std::fmt::{Display, Formatter};
+use std::result;
 
-use crate::vstate::{vcpu::VcpuEmulation, vm::Vm};
+use arch::aarch64::regs::Aarch64Register;
 use kvm_ioctls::*;
 use logger::{error, IncMetric, METRICS};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 use vm_memory::{Address, GuestAddress, GuestMemoryMmap};
+
+use crate::vstate::vcpu::VcpuEmulation;
+use crate::vstate::vm::Vm;
 
 /// Errors associated with the wrappers over KVM ioctls.
 #[derive(Debug)]
@@ -39,14 +40,20 @@ impl Display for Error {
         use self::Error::*;
 
         match self {
-            ConfigureRegisters(e) => {
-                write!(f, "Error configuring the general purpose registers: {}", e)
+            ConfigureRegisters(err) => {
+                write!(
+                    f,
+                    "Error configuring the general purpose registers: {}",
+                    err
+                )
             }
-            CreateFd(e) => write!(f, "Error in opening the VCPU file descriptor: {}", e),
-            GetPreferredTarget(e) => write!(f, "Error retrieving the vcpu preferred target: {}", e),
-            Init(e) => write!(f, "Error initializing the vcpu: {}", e),
-            RestoreState(e) => write!(f, "Failed to restore the state of the vcpu: {}", e),
-            SaveState(e) => write!(f, "Failed to save the state of the vcpu: {}", e),
+            CreateFd(err) => write!(f, "Error in opening the VCPU file descriptor: {}", err),
+            GetPreferredTarget(err) => {
+                write!(f, "Error retrieving the vcpu preferred target: {}", err)
+            }
+            Init(err) => write!(f, "Error initializing the vcpu: {}", err),
+            RestoreState(err) => write!(f, "Failed to restore the state of the vcpu: {}", err),
+            SaveState(err) => write!(f, "Failed to save the state of the vcpu: {}", err),
         }
     }
 }
@@ -62,7 +69,7 @@ pub struct KvmVcpu {
 
     mpidr: u64,
 }
-
+pub type KvmVcpuConfigureError = Error;
 impl KvmVcpu {
     /// Constructs a new kvm vcpu with arch specific functionality.
     ///
@@ -96,7 +103,7 @@ impl KvmVcpu {
         &mut self,
         guest_mem: &GuestMemoryMmap,
         kernel_load_addr: GuestAddress,
-    ) -> Result<()> {
+    ) -> std::result::Result<(), KvmVcpuConfigureError> {
         arch::aarch64::regs::setup_boot_regs(
             &self.fd,
             self.index,
@@ -173,7 +180,7 @@ impl KvmVcpu {
 #[derive(Clone, Default, Versionize)]
 pub struct VcpuState {
     pub mp_state: kvm_bindings::kvm_mp_state,
-    pub regs: Vec<kvm_bindings::kvm_one_reg>,
+    pub regs: Vec<Aarch64Register>,
     // We will be using the mpidr for passing it to the VmState.
     // The VmState will give this away for saving restoring the icc and redistributor
     // registers.
@@ -182,12 +189,14 @@ pub struct VcpuState {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::undocumented_unsafe_blocks)]
     use std::os::unix::io::AsRawFd;
 
-    use super::*;
-    use crate::vstate::vm::{tests::setup_vm, Vm};
-    use kvm_bindings::kvm_one_reg;
     use vm_memory::GuestMemoryMmap;
+
+    use super::*;
+    use crate::vstate::vm::tests::setup_vm;
+    use crate::vstate::vm::Vm;
 
     fn setup_vcpu(mem_size: usize) -> (Vm, KvmVcpu, GuestMemoryMmap) {
         let (mut vm, vm_mem) = setup_vm(mem_size);
@@ -233,7 +242,8 @@ mod tests {
         assert!(err.is_err());
         assert_eq!(
             err.err().unwrap().to_string(),
-            "Error configuring the general purpose registers: Failed to set processor state register: Bad file descriptor (os error 9)"
+            "Error configuring the general purpose registers: Failed to set processor state \
+             register: Bad file descriptor (os error 9)"
                 .to_string()
         );
 
@@ -243,7 +253,8 @@ mod tests {
         assert!(err.is_err());
         assert_eq!(
             err.err().unwrap().to_string(),
-            "Error configuring the general purpose registers: Failed to set processor state register: Bad file descriptor (os error 9)"
+            "Error configuring the general purpose registers: Failed to set processor state \
+             register: Bad file descriptor (os error 9)"
                 .to_string()
         );
     }
@@ -272,34 +283,38 @@ mod tests {
         assert!(res.is_err());
         assert_eq!(
             res.err().unwrap().to_string(),
-            "Failed to save the state of the vcpu: Failed to get X0 register: Exec format error (os error 8)".to_string()
+            "Failed to save the state of the vcpu: Failed to get X0 register: Exec format error \
+             (os error 8)"
+                .to_string()
         );
 
         // Try to restore the register using a faulty state.
         let faulty_vcpu_state = VcpuState {
-            regs: vec![kvm_one_reg { id: 0, addr: 0 }],
+            regs: vec![Aarch64Register { id: 0, value: 0 }],
             ..Default::default()
         };
 
         let res = vcpu.restore_state(&faulty_vcpu_state);
         assert!(res.is_err());
         assert_eq!(
-                res.err().unwrap().to_string(),
-                "Failed to restore the state of the vcpu: Failed to set register: Exec format error (os error 8)".to_string()
-            );
+            res.err().unwrap().to_string(),
+            "Failed to restore the state of the vcpu: Failed to set register: Exec format error \
+             (os error 8)"
+                .to_string()
+        );
 
-        init_vcpu(&vcpu.fd, &vm.fd());
+        init_vcpu(&vcpu.fd, vm.fd());
         let state = vcpu.save_state().expect("Cannot save state of vcpu");
         assert!(!state.regs.is_empty());
         vcpu.restore_state(&state)
             .expect("Cannot restore state of vcpu");
-        let addr = vcpu
+        let value = vcpu
             .fd
             .get_one_reg(0x6030_0000_0010_003E)
             .expect("Cannot get sp core register");
-        assert!(state.regs.contains(&kvm_bindings::kvm_one_reg {
+        assert!(state.regs.contains(&Aarch64Register {
             id: 0x6030_0000_0010_003E,
-            addr
+            value
         }));
     }
 

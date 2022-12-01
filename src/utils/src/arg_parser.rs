@@ -2,9 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::BTreeMap;
-use std::env;
-use std::fmt;
-use std::result;
+use std::{env, fmt, result};
 
 pub type Result<T> = result::Result<T, Error>;
 
@@ -14,7 +12,7 @@ const HELP_ARG: &str = "--help";
 const VERSION_ARG: &str = "--version";
 
 /// Errors associated with parsing and validating arguments.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     /// The argument B cannot be used together with argument A.
     ForbiddenArgument(String, String),
@@ -135,7 +133,7 @@ impl<'a> ArgParser<'a> {
 }
 
 /// Stores the characteristics of the `name` command line argument.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Argument<'a> {
     name: &'a str,
     required: bool,
@@ -247,7 +245,7 @@ impl<'a> Argument<'a> {
 }
 
 /// Represents the type of argument, and the values it takes.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     Flag,
     Single(String),
@@ -305,7 +303,7 @@ impl<'a> Arguments<'a> {
             argument
                 .user_value
                 .as_ref()
-                .or_else(|| argument.default_value.as_ref())
+                .or(argument.default_value.as_ref())
         })
     }
 
@@ -343,7 +341,7 @@ impl<'a> Arguments<'a> {
             return (&args[..index], &args[index + 1..]);
         }
 
-        (&args, &[])
+        (args, &[])
     }
 
     /// Collect the command line arguments and the values provided for them.
@@ -384,7 +382,8 @@ impl<'a> Arguments<'a> {
         self.populate_args(args)
     }
 
-    // Check if `required`, `requires` and `forbids` field rules are indeed followed by every argument.
+    // Check if `required`, `requires` and `forbids` field rules are indeed followed by every
+    // argument.
     fn validate_requirements(&self, args: &[String]) -> Result<()> {
         for argument in self.args.values() {
             // The arguments that are marked `required` must be provided by user.
@@ -474,8 +473,9 @@ impl<'a> Arguments<'a> {
             argument.user_value = Some(arg_val);
         }
 
-        // Check the constraints for the `required`, `requires` and `forbids` fields of all arguments.
-        self.validate_requirements(&args)?;
+        // Check the constraints for the `required`, `requires` and `forbids` fields of all
+        // arguments.
+        self.validate_requirements(args)?;
 
         Ok(())
     }
@@ -619,10 +619,8 @@ mod tests {
 
         assert_eq!(
             arg_parser.formatted_help(),
-            "required arguments:\n  \
-             --exec-file <exec-file>   'exec-file' info.\n\n\
-             optional arguments:\n  \
-             --api-sock <api-sock>   'api-sock' info."
+            "required arguments:\n  --exec-file <exec-file>   'exec-file' info.\n\noptional \
+             arguments:\n  --api-sock <api-sock>   'api-sock' info."
         );
 
         arg_parser = ArgParser::new()
@@ -640,16 +638,15 @@ mod tests {
 
         assert_eq!(
             arg_parser.formatted_help(),
-            "optional arguments:\n  \
-             --config-file <config-file>         'config-file' info.\n  \
-             --id <id>                           'id' info.\n  \
-             --seccomp-filter <seccomp-filter>   'seccomp-filter' info."
+            "optional arguments:\n  --config-file <config-file>         'config-file' info.\n  \
+             --id <id>                           'id' info.\n  --seccomp-filter <seccomp-filter>   \
+             'seccomp-filter' info."
         );
     }
 
     #[test]
     fn test_value() {
-        //Test `as_string()` and `as_flag()` functions behaviour.
+        // Test `as_string()` and `as_flag()` functions behaviour.
         let mut value = Value::Flag;
         assert!(Value::as_single_value(&value).is_none());
         value = Value::Single("arg".to_string());

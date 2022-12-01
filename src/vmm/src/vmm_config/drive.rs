@@ -4,21 +4,19 @@
 use std::collections::VecDeque;
 use std::convert::TryInto;
 use std::fmt::{Display, Formatter};
-use std::io;
+use std::ops::Deref;
 use std::path::PathBuf;
-use std::result;
 use std::sync::{Arc, Mutex};
+use std::{io, result};
+
+pub use devices::virtio::block::device::FileEngineType;
+use devices::virtio::block::Error as BlockError;
+use devices::virtio::Block;
+pub use devices::virtio::CacheType;
+use serde::{Deserialize, Serialize};
 
 use super::RateLimiterConfig;
 use crate::Error as VmmError;
-use devices::virtio::block::Error as BlockError;
-use devices::virtio::Block;
-
-pub use devices::virtio::block::device::FileEngineType;
-pub use devices::virtio::CacheType;
-
-use serde::{Deserialize, Serialize};
-use std::ops::Deref;
 
 type Result<T> = result::Result<T, DriveError>;
 
@@ -46,15 +44,15 @@ impl Display for DriveError {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         use self::DriveError::*;
         match self {
-            CreateBlockDevice(e) => write!(f, "Unable to create the block device {:?}", e),
-            BlockDeviceUpdateFailed(e) => write!(f, "The update operation failed: {}", e),
-            CreateRateLimiter(e) => write!(f, "Cannot create RateLimiter: {}", e),
-            DeviceUpdate(e) => write!(f, "Error during drive update (patch): {}", e),
+            CreateBlockDevice(err) => write!(f, "Unable to create the block device {:?}", err),
+            BlockDeviceUpdateFailed(err) => write!(f, "The update operation failed: {}", err),
+            CreateRateLimiter(err) => write!(f, "Cannot create RateLimiter: {}", err),
+            DeviceUpdate(err) => write!(f, "Error during drive update (patch): {}", err),
             InvalidBlockDevicePath(path) => write!(f, "Invalid block device path: {}", path),
-            OpenBlockDevice(e) => write!(
+            OpenBlockDevice(err) => write!(
                 f,
                 "Cannot open block device. Invalid permission/path: {}",
-                e
+                err
             ),
             RootBlockDeviceAlreadyAdded => write!(f, "A root block device already exists!"),
         }
@@ -62,7 +60,7 @@ impl Display for DriveError {
 }
 
 /// Use this structure to set up the Block Device before booting the kernel.
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlockDeviceConfig {
     /// Unique identifier of the drive.
@@ -109,7 +107,7 @@ impl From<&Block> for BlockDeviceConfig {
 
 /// Only provided fields will be updated. I.e. if any optional fields
 /// are missing, they will not be updated.
-#[derive(Debug, Default, Deserialize, PartialEq)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BlockDeviceUpdateConfig {
     /// The drive ID, as provided by the user at creation time.
@@ -247,9 +245,10 @@ impl BlockBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rate_limiter::RateLimiter;
     use utils::tempfile::TempFile;
+
+    use super::*;
 
     impl PartialEq for DriveError {
         fn eq(&self, other: &DriveError) -> bool {

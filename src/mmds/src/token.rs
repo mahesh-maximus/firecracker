@@ -1,17 +1,17 @@
 // Copyright 2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use aes_gcm::aead::NewAead;
-use aes_gcm::{AeadInPlace, Aes256Gcm, Key, Nonce};
-use bincode::{DefaultOptions, Error as BincodeError, Options};
-use logger::warn;
-use serde::{Deserialize, Serialize};
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::Read;
 use std::ops::Add;
 use std::path::Path;
 use std::{fmt, io};
+
+use aes_gcm::{AeadInPlace, Aes256Gcm, Key, KeyInit, Nonce};
+use bincode::{DefaultOptions, Error as BincodeError, Options};
+use logger::warn;
+use serde::{Deserialize, Serialize};
 use utils::time::{get_time_ms, ClockType};
 
 /// Length of initialization vector.
@@ -45,7 +45,7 @@ const TOKEN_LENGTH_LIMIT: usize = 70;
 /// too much memory when deserializing tokens.
 const DESERIALIZATION_BYTES_LIMIT: usize = std::mem::size_of::<Token>();
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum Error {
     /// Failed to extract entropy from pool.
     EntropyPool(io::Error),
@@ -63,7 +63,7 @@ pub enum Error {
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match &*self {
+        match self {
             Error::EntropyPool(err) => {
                 write!(
                     f,
@@ -75,8 +75,8 @@ impl fmt::Display for Error {
             Error::InvalidState => write!(f, "Invalid token authority state."),
             Error::InvalidTtlValue(value) => write!(
                 f,
-                "Invalid time to live value provided for token: {}. \
-                Please provide a value between {} and {}.",
+                "Invalid time to live value provided for token: {}. Please provide a value \
+                 between {} and {}.",
                 value, MIN_TOKEN_TTL_SECONDS, MAX_TOKEN_TTL_SECONDS,
             ),
             Error::Serialization(err) => write!(f, "Bincode serialization failed: {}.", err),
@@ -98,7 +98,7 @@ pub struct TokenAuthority {
 impl TokenAuthority {
     /// Create a new token authority entity.
     pub fn new() -> Result<TokenAuthority, Error> {
-        let mut file = File::open(Path::new(RANDOMNESS_POOL)).map_err(Error::EntropyPool)?;
+        let mut file = File::open(Path::new(RANDOMNESS_POOL))?;
 
         Ok(TokenAuthority {
             cipher: TokenAuthority::create_cipher(&mut file)?,
@@ -139,9 +139,7 @@ impl TokenAuthority {
 
         // Generate 12-byte random nonce.
         let mut iv = [0u8; IV_LEN];
-        self.entropy_pool
-            .read_exact(&mut iv)
-            .map_err(Error::EntropyPool)?;
+        self.entropy_pool.read_exact(&mut iv)?;
 
         // Compute expiration time in milliseconds from ttl.
         let expiry = TokenAuthority::compute_expiry(ttl_seconds);
@@ -231,12 +229,10 @@ impl TokenAuthority {
     fn create_cipher(entropy_pool: &mut File) -> Result<Aes256Gcm, Error> {
         // Randomly generate a 256-bit key to be used for encryption/decryption purposes.
         let mut key = [0u8; KEY_LEN];
-        entropy_pool
-            .read_exact(&mut key)
-            .map_err(Error::EntropyPool)?;
+        entropy_pool.read_exact(&mut key)?;
 
         // Create cipher entity to handle encryption/decryption.
-        Ok(Aes256Gcm::new(Key::from_slice(&key)))
+        Ok(Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key)))
     }
 
     /// Make sure to reinitialize the cipher under a new key before reaching
@@ -267,7 +263,7 @@ impl TokenAuthority {
 
     /// Validate the token time to live against bounds.
     fn check_ttl(ttl_seconds: u32) -> bool {
-        MIN_TOKEN_TTL_SECONDS <= ttl_seconds && ttl_seconds <= MAX_TOKEN_TTL_SECONDS
+        (MIN_TOKEN_TTL_SECONDS..=MAX_TOKEN_TTL_SECONDS).contains(&ttl_seconds)
     }
 
     /// Compute expiry time in seconds by adding the time to live provided
@@ -280,7 +276,7 @@ impl TokenAuthority {
         // to current time (also in milliseconds). This addition is safe
         // because ttl is verified beforehand and can never be more than
         // 6h (21_600_000 ms).
-        now_as_milliseconds.add(ttl_as_seconds as u64 * MILLISECONDS_PER_SECOND)
+        now_as_milliseconds.add(u64::from(ttl_as_seconds) * MILLISECONDS_PER_SECOND)
     }
 }
 
@@ -303,7 +299,7 @@ impl Token {
 
     /// Encode token structure into a string using base64 encoding.
     fn base64_encode(&self) -> Result<String, Error> {
-        let token_bytes: Vec<u8> = bincode::serialize(self).map_err(Error::Serialization)?;
+        let token_bytes: Vec<u8> = bincode::serialize(self)?;
 
         // Encode token structure bytes into base64.
         Ok(base64::encode_config(token_bytes, base64::STANDARD))
@@ -326,9 +322,10 @@ impl Token {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::thread::sleep;
     use std::time::Duration;
+
+    use super::*;
 
     #[test]
     fn test_check_tll() {
@@ -359,8 +356,8 @@ mod tests {
         assert_eq!(
             token_authority.create_token(0).unwrap_err().to_string(),
             format!(
-                "Invalid time to live value provided for token: 0. \
-                Please provide a value between {} and {}.",
+                "Invalid time to live value provided for token: 0. Please provide a value between \
+                 {} and {}.",
                 MIN_TOKEN_TTL_SECONDS, MAX_TOKEN_TTL_SECONDS
             )
         );
@@ -380,12 +377,16 @@ mod tests {
         // We allow a deviation of 20ms to account for the gap
         // between the two calls to `get_time_ms()`.
         let deviation = 20;
-        assert!(ttl >= MILLISECONDS_PER_SECOND - deviation && ttl <= MILLISECONDS_PER_SECOND);
+        assert!(
+            ttl >= MILLISECONDS_PER_SECOND && ttl <= MILLISECONDS_PER_SECOND + deviation,
+            "ttl={ttl} not within [{MILLISECONDS_PER_SECOND}, \
+             {MILLISECONDS_PER_SECOND}+{deviation}]",
+        );
 
         let time_now = get_time_ms(ClockType::Monotonic);
         let expiry = TokenAuthority::compute_expiry(0);
         let ttl = expiry - time_now;
-        assert!(ttl <= deviation);
+        assert!(ttl <= deviation, "ttl={ttl} is greater than {deviation}");
     }
 
     #[test]
@@ -460,8 +461,8 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             format!(
-                "Invalid time to live value provided for token: {}. \
-                Please provide a value between {} and {}.",
+                "Invalid time to live value provided for token: {}. Please provide a value \
+                 between {} and {}.",
                 MIN_TOKEN_TTL_SECONDS - 1,
                 MIN_TOKEN_TTL_SECONDS,
                 MAX_TOKEN_TTL_SECONDS
@@ -475,8 +476,8 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             format!(
-                "Invalid time to live value provided for token: {}. \
-                Please provide a value between {} and {}.",
+                "Invalid time to live value provided for token: {}. Please provide a value \
+                 between {} and {}.",
                 MAX_TOKEN_TTL_SECONDS + 1,
                 MIN_TOKEN_TTL_SECONDS,
                 MAX_TOKEN_TTL_SECONDS
@@ -552,8 +553,8 @@ mod tests {
         assert_eq!(
             Error::InvalidTtlValue(0).to_string(),
             format!(
-                "Invalid time to live value provided for token: 0. \
-                Please provide a value between {} and {}.",
+                "Invalid time to live value provided for token: 0. Please provide a value between \
+                 {} and {}.",
                 MIN_TOKEN_TTL_SECONDS, MAX_TOKEN_TTL_SECONDS
             )
         );

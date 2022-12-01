@@ -5,16 +5,14 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 pub use devices::virtio::balloon::device::BalloonStats;
-use devices::virtio::balloon::Error as BalloonError;
 pub use devices::virtio::BALLOON_DEV_ID;
 use devices::virtio::{Balloon, BalloonConfig};
-
 use serde::{Deserialize, Serialize};
 
 type MutexBalloon = Arc<Mutex<Balloon>>;
 
 /// Errors associated with the operations allowed on the balloon.
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum BalloonConfigError {
     /// The user made a request on an inexistent balloon device.
     DeviceNotFound,
@@ -45,26 +43,12 @@ impl fmt::Display for BalloonConfigError {
             InvalidStatsUpdate => write!(f, "Cannot enable/disable the statistics after boot."),
             TooManyPagesRequested => write!(f, "Amount of pages requested is too large."),
             StatsNotFound => write!(f, "Statistics for the balloon device are not enabled"),
-            CreateFailure(e) => write!(f, "Error creating the balloon device: {:?}", e),
-            UpdateFailure(e) => write!(
+            CreateFailure(err) => write!(f, "Error creating the balloon device: {:?}", err),
+            UpdateFailure(err) => write!(
                 f,
                 "Error updating the balloon device configuration: {:?}",
-                e
+                err
             ),
-        }
-    }
-}
-
-impl From<BalloonError> for BalloonConfigError {
-    fn from(error: BalloonError) -> Self {
-        match error {
-            BalloonError::DeviceNotFound => Self::DeviceNotFound,
-            BalloonError::DeviceNotActive => Self::DeviceNotActive,
-            BalloonError::InterruptError(io_error) => Self::UpdateFailure(io_error),
-            BalloonError::StatisticsStateChange => Self::InvalidStatsUpdate,
-            BalloonError::StatisticsDisabled => Self::StatsNotFound,
-            BalloonError::TooManyPagesRequested => Self::TooManyPagesRequested,
-            e => Self::CreateFailure(e),
         }
     }
 }
@@ -73,7 +57,7 @@ type Result<T> = std::result::Result<T, BalloonConfigError>;
 
 /// This struct represents the strongly typed equivalent of the json body
 /// from balloon related requests.
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BalloonDeviceConfig {
     /// Target balloon size in MiB.
@@ -97,7 +81,7 @@ impl From<BalloonConfig> for BalloonDeviceConfig {
 
 /// The data fed into a balloon update request. Currently, only the number
 /// of pages and the stats polling interval can be updated.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BalloonUpdateConfig {
     /// Target balloon size in MiB.
@@ -108,7 +92,7 @@ pub struct BalloonUpdateConfig {
 /// Note that the state of the statistics cannot be changed from ON to OFF
 /// or vice versa after boot, only the interval of polling can be changed
 /// if the statistics were activated in the device configuration.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BalloonUpdateStatsConfig {
     /// Interval in seconds between refreshing statistics.
@@ -116,15 +100,9 @@ pub struct BalloonUpdateStatsConfig {
 }
 
 /// A builder for `Balloon` devices from 'BalloonDeviceConfig'.
+#[cfg_attr(not(test), derive(Default))]
 pub struct BalloonBuilder {
     inner: Option<MutexBalloon>,
-}
-
-#[cfg(not(test))]
-impl Default for BalloonBuilder {
-    fn default() -> BalloonBuilder {
-        BalloonBuilder { inner: None }
-    }
 }
 
 impl BalloonBuilder {
@@ -136,17 +114,14 @@ impl BalloonBuilder {
     /// Inserts a Balloon device in the store.
     /// If an entry already exists, it will overwrite it.
     pub fn set(&mut self, cfg: BalloonDeviceConfig) -> Result<()> {
-        self.inner = Some(Arc::new(Mutex::new(
-            Balloon::new(
-                cfg.amount_mib,
-                cfg.deflate_on_oom,
-                cfg.stats_polling_interval_s,
-                // `restored` flag is false because this code path
-                // is never called by snapshot restore functionality.
-                false,
-            )
-            .map_err(BalloonConfigError::CreateFailure)?,
-        )));
+        self.inner = Some(Arc::new(Mutex::new(Balloon::new(
+            cfg.amount_mib,
+            cfg.deflate_on_oom,
+            cfg.stats_polling_interval_s,
+            // `restored` flag is false because this code path
+            // is never called by snapshot restore functionality.
+            false,
+        )?)));
 
         Ok(())
     }
@@ -231,8 +206,9 @@ pub(crate) mod tests {
 
     #[test]
     fn test_error_messages() {
-        use super::BalloonConfigError::*;
         use std::io;
+
+        use super::BalloonConfigError::*;
         let err = CreateFailure(devices::virtio::balloon::Error::EventFd(
             io::Error::from_raw_os_error(0),
         ));

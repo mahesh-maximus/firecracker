@@ -16,7 +16,7 @@ class CriteriaFactory:
     """Comparison criteria factory class."""
 
     @classmethod
-    def get(cls, criteria_cls_name) -> 'ComparisonCriteria':
+    def get(cls, criteria_cls_name) -> "ComparisonCriteria":
         """`criteria_cls_name` must be a valid criteria class name."""
         return locate(f"framework.stats.criteria.{criteria_cls_name}")
 
@@ -54,8 +54,11 @@ class ComparisonCriteria(ABC):
     @property
     def target(self):
         """Return criteria target."""
+        if self._baseline is None:
+            raise CriteriaException("Baseline data not defined.")
+
         target = self._baseline.get("target")
-        if not target:
+        if target is None:
             raise CriteriaException("Baseline target not defined.")
 
         return target
@@ -67,8 +70,7 @@ class ComparisonCriteria(ABC):
 
     def fail_msg(self, actual):
         """Return the default fail message."""
-        return self.name + f" failed. Target: '{self.target} vs Actual: " \
-                           f"'{actual}'."
+        return self.name + f" failed. Target: '{self.target} vs Actual: " f"'{actual}'."
 
 
 # pylint: disable=R0903
@@ -123,15 +125,20 @@ class EqualWith(ComparisonCriteria):
     @property
     def delta(self):
         """Return the `delta` field of the baseline."""
+        if self._baseline is None:
+            raise CriteriaException("Baseline data not defined.")
+
         delta = self._baseline.get("delta")
-        if not delta:
+        if delta is None:
             raise CriteriaException("Baseline delta not defined.")
         return delta
 
     def fail_msg(self, actual):
         """Return the `EqualWith` failure message."""
-        return self.name + f" failed. Target: '{self.target} +- " \
-                           f"{self.delta}' vs Actual: '{actual}'."
+        return (
+            self.name + f" failed. Target: '{self.target} +- "
+            f"{self.delta}' vs Actual: '{actual}'."
+        )
 
     def check(self, actual):
         """Compare the target and the actual."""

@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![deny(missing_docs)]
+#![warn(clippy::ptr_as_ptr)]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::cast_lossless)]
 //! # Rate Limiter
 //!
 //! Provides a rate limiter written in Rust useful for IO operations that need to
@@ -42,10 +45,11 @@
 //! It is meant to be used in an external event loop and thus implements the `AsRawFd`
 //! trait and provides an *event-handler* as part of its API. This *event-handler*
 //! needs to be called by the user on every event on the rate limiter's `AsRawFd` FD.
-use logger::error;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::{Duration, Instant};
 use std::{fmt, io};
+
+use logger::error;
 use timerfd::{ClockId, SetTimeFlags, TimerFd, TimerState};
 
 pub mod persist;
@@ -89,7 +93,7 @@ pub enum BucketReduction {
 
 /// TokenBucket provides a lower level interface to rate limiting with a
 /// configurable capacity, refill-rate and initial burst.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TokenBucket {
     // Bucket defining traits.
     size: u64,
@@ -135,7 +139,8 @@ impl TokenBucket {
         let common_factor = gcd(size, complete_refill_time_ns);
         // The division will be exact since `common_factor` is a factor of `size`.
         let processed_capacity: u64 = size / common_factor;
-        // The division will be exact since `common_factor` is a factor of `complete_refill_time_ns`.
+        // The division will be exact since `common_factor` is a factor of
+        // `complete_refill_time_ns`.
         let processed_refill_time: u64 = complete_refill_time_ns / common_factor;
 
         Some(TokenBucket {
@@ -174,7 +179,8 @@ impl TokenBucket {
             if self.one_time_burst >= tokens {
                 self.one_time_burst -= tokens;
                 self.last_update = Instant::now();
-                // No need to continue to the refill process, we still have burst budget to consume from.
+                // No need to continue to the refill process, we still have burst budget to consume
+                // from.
                 return BucketReduction::Success;
             } else {
                 // We still have burst budget for *some* of the tokens requests.
@@ -512,9 +518,10 @@ impl Default for RateLimiter {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::*;
     use std::thread;
     use std::time::Duration;
+
+    use super::*;
 
     impl TokenBucket {
         // Resets the token bucket: budget set to max capacity and last-updated set to now.
@@ -634,8 +641,8 @@ pub(crate) mod tests {
         assert!(l.event_handler().is_err());
         assert_eq!(
             format!("{:?}", l.event_handler().err().unwrap()),
-            "SpuriousRateLimiterEvent(\
-             \"Rate limiter event handler called without a present timer\")"
+            "SpuriousRateLimiterEvent(\"Rate limiter event handler called without a present \
+             timer\")"
         );
     }
 

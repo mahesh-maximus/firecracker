@@ -5,23 +5,20 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use crate::legacy::EventFdTrigger;
-use crate::BusDevice;
-use logger::SerialDeviceMetrics;
-use std::io;
+//! Implements a wrapper over an UART serial device.
 use std::io::Write;
-use std::os::unix::io::AsRawFd;
-use std::result;
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::Arc;
-use vm_superio::serial::Error as SerialError;
-use vm_superio::serial::SerialEvents;
-use vm_superio::Serial;
-use vm_superio::Trigger;
+use std::{io, result};
 
 use event_manager::{EventOps, Events, MutEventSubscriber};
-use logger::{error, warn, IncMetric};
-use std::os::unix::io::RawFd;
+use logger::{error, warn, IncMetric, SerialDeviceMetrics};
 use utils::epoll::EventSet;
+use vm_superio::serial::{Error as SerialError, SerialEvents};
+use vm_superio::{Serial, Trigger};
+
+use crate::legacy::EventFdTrigger;
+use crate::BusDevice;
 
 // Cannot use multiple types as bounds for a trait object, so we define our own trait
 // which is a composition of the desired bounds. In this case, io::Read and AsRawFd.
@@ -62,8 +59,11 @@ impl<EV: SerialEvents, W: Write> RawIOHandler for Serial<EventFdTrigger, EV, W> 
     }
 }
 
+/// Wrapper over available events (i.e metrics, buffer ready etc).
 pub struct SerialEventsWrapper {
+    /// Metrics for this serial device.
     pub metrics: Arc<SerialDeviceMetrics>,
+    /// Buffer ready event.
     pub buffer_ready_event_fd: Option<EventFdTrigger>,
 }
 
@@ -95,8 +95,11 @@ impl SerialEvents for SerialEventsWrapper {
     }
 }
 
+/// Wrapper over the imported serial device.
 pub struct SerialWrapper<T: Trigger, EV: SerialEvents, W: Write> {
+    /// Serial device object.
     pub serial: Serial<T, EV, W>,
+    /// Input to the serial device (needs to be readable).
     pub input: Option<Box<dyn ReadableFd + Send>>,
 }
 
@@ -110,10 +113,10 @@ impl<W: Write> SerialWrapper<EventFdTrigger, SerialEventsWrapper, W> {
         }
         match ops.add(Events::new(&input_fd, EventSet::IN)) {
             Err(event_manager::Error::FdAlreadyRegistered) => (),
-            Err(e) => {
+            Err(err) => {
                 error!(
                     "Could not register the serial input to the event manager: {:?}",
-                    e
+                    err
                 );
             }
             Ok(()) => {
@@ -158,7 +161,7 @@ impl<W: Write> SerialWrapper<EventFdTrigger, SerialEventsWrapper, W> {
         self.input.as_ref().map_or(-1, |input| input.as_raw_fd())
     }
 
-    pub fn consume_buffer_ready_event(&self) -> io::Result<u64> {
+    fn consume_buffer_ready_event(&self) -> io::Result<u64> {
         self.serial
             .events()
             .buffer_ready_event_fd
@@ -167,6 +170,7 @@ impl<W: Write> SerialWrapper<EventFdTrigger, SerialEventsWrapper, W> {
     }
 }
 
+/// Type for representing a serial device.
 pub type SerialDevice =
     SerialWrapper<EventFdTrigger, SerialEventsWrapper, Box<dyn io::Write + Send>>;
 
@@ -194,7 +198,11 @@ impl<W: std::io::Write> MutEventSubscriber
             match self.consume_buffer_ready_event() {
                 Ok(_) => (),
                 Err(err) => {
-                    error!("Detach serial device input source due to error in consuming the buffer ready event: {:?}", err);
+                    error!(
+                        "Detach serial device input source due to error in consuming the buffer \
+                         ready event: {:?}",
+                        err
+                    );
                     unregister_source(ops, &input_fd);
                     unregister_source(ops, &buffer_ready_fd);
                     return;
@@ -214,8 +222,8 @@ impl<W: std::io::Write> MutEventSubscriber
                     warn!("Detached the serial input due to peer close/error.");
                 }
             }
-            Err(e) => {
-                match e.raw_os_error() {
+            Err(err) => {
+                match err.raw_os_error() {
                     Some(errno) if errno == libc::ENOBUFS => {
                         unregister_source(ops, &input_fd);
                     }
@@ -245,12 +253,12 @@ impl<W: std::io::Write> MutEventSubscriber
             let serial_fd = self.serial_input_fd();
             let buf_ready_evt = self.buffer_ready_evt_fd();
             if serial_fd != -1 {
-                if let Err(e) = ops.add(Events::new(&serial_fd, EventSet::IN)) {
-                    warn!("Failed to register serial input fd: {}", e);
+                if let Err(err) = ops.add(Events::new(&serial_fd, EventSet::IN)) {
+                    warn!("Failed to register serial input fd: {}", err);
                 }
             }
-            if let Err(e) = ops.add(Events::new(&buf_ready_evt, EventSet::IN)) {
-                warn!("Failed to register serial buffer ready event: {}", e);
+            if let Err(err) = ops.add(Events::new(&buf_ready_evt, EventSet::IN)) {
+                warn!("Failed to register serial buffer ready event: {}", err);
             }
         }
     }
@@ -272,9 +280,9 @@ impl<W: Write + Send + 'static> BusDevice
             self.serial.events().metrics.missed_write_count.inc();
             return;
         }
-        if let Err(e) = self.serial.write(offset as u8, data[0]) {
+        if let Err(err) = self.serial.write(offset as u8, data[0]) {
             // Counter incremented for any handle_write() error.
-            error!("Failed the write to serial: {:?}", e);
+            error!("Failed the write to serial: {:?}", err);
             self.serial.events().metrics.error_count.inc();
         }
     }
@@ -282,10 +290,12 @@ impl<W: Write + Send + 'static> BusDevice
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io;
     use std::sync::{Arc, Mutex};
+
     use utils::eventfd::EventFd;
+
+    use super::*;
 
     #[derive(Clone)]
     struct SharedBuffer {

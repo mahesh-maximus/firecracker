@@ -1,8 +1,10 @@
 // Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
+use std::fmt;
 
 use serde::{de, Deserialize, Serialize};
-use std::fmt;
+use versionize::{VersionMap, Versionize, VersionizeError, VersionizeResult};
+use versionize_derive::Versionize;
 
 /// The default memory size of the VM, in MiB.
 pub const DEFAULT_MEM_SIZE_MIB: usize = 128;
@@ -11,7 +13,7 @@ pub const DEFAULT_MEM_SIZE_MIB: usize = 128;
 pub const MAX_SUPPORTED_VCPUS: u8 = 32;
 
 /// Errors associated with configuring the microVM.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum VmConfigError {
     /// The memory size is smaller than the target size set in the balloon device configuration.
     IncompatibleBalloonSize,
@@ -24,6 +26,7 @@ pub enum VmConfigError {
     /// balloon device was previously installed.
     InvalidVmState,
 }
+impl std::error::Error for VmConfigError {}
 
 impl fmt::Display for VmConfigError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -31,19 +34,19 @@ impl fmt::Display for VmConfigError {
         match *self {
             IncompatibleBalloonSize => write!(
                 f,
-                "The memory size (MiB) is smaller than the previously \
-                 set balloon device target size.",
+                "The memory size (MiB) is smaller than the previously set balloon device target \
+                 size.",
             ),
             InvalidMemorySize => write!(f, "The memory size (MiB) is invalid.",),
             InvalidVcpuCount => write!(
                 f,
-                "The vCPU number is invalid! The vCPU number can only \
-                 be 1 or an even number when SMT is enabled.",
+                "The vCPU number is invalid! The vCPU number can only be 1 or an even number when \
+                 SMT is enabled.",
             ),
             InvalidVmState => write!(
                 f,
-                "Could not get the configuration of the previously \
-                 installed balloon device to validate the memory size.",
+                "Could not get the configuration of the previously installed balloon device to \
+                 validate the memory size.",
             ),
         }
     }
@@ -51,7 +54,7 @@ impl fmt::Display for VmConfigError {
 
 /// Strongly typed structure that represents the configuration of the
 /// microvm.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmConfig {
     /// Number of vcpu to start.
@@ -90,8 +93,8 @@ impl fmt::Display for VmConfig {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "{{ \"vcpu_count\": {:?}, \"mem_size_mib\": {:?}, \"smt\": {:?}, \
-             \"cpu_template\": {:?}, \"track_dirty_pages\": {:?} }}",
+            "{{ \"vcpu_count\": {:?}, \"mem_size_mib\": {:?}, \"smt\": {:?}, \"cpu_template\": \
+             {:?}, \"track_dirty_pages\": {:?} }}",
             self.vcpu_count, self.mem_size_mib, self.smt, self.cpu_template, self.track_dirty_pages
         )
     }
@@ -102,7 +105,7 @@ impl fmt::Display for VmConfig {
 /// All fields are optional, but at least one needs to be specified.
 /// If a field is `Some(value)` then we assume an update is requested
 /// for that field.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmUpdateConfig {
     /// Number of vcpu to start.
@@ -177,13 +180,13 @@ where
 
     if val > T::from(MAX_SUPPORTED_VCPUS) {
         return Err(de::Error::invalid_value(
-            de::Unexpected::Other(&"vcpu_num"),
+            de::Unexpected::Other("vcpu_num"),
             &"number of vCPUs exceeds the maximum limitation",
         ));
     }
     if val < T::from(1) {
         return Err(de::Error::invalid_value(
-            de::Unexpected::Other(&"vcpu_num"),
+            de::Unexpected::Other("vcpu_num"),
             &"number of vCPUs should be larger than 0",
         ));
     }
@@ -206,7 +209,7 @@ where
     #[cfg(target_arch = "aarch64")]
     if val == T::from(true) {
         return Err(de::Error::invalid_value(
-            de::Unexpected::Other(&"smt"),
+            de::Unexpected::Other("smt"),
             &"Enabling simultaneous multithreading is not supported on aarch64",
         ));
     }
@@ -235,12 +238,14 @@ where
 
 /// Template types available for configuring the CPU features that map
 /// to EC2 instances.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Versionize)]
 pub enum CpuFeaturesTemplate {
     /// C3 Template.
     C3,
     /// T2 Template.
     T2,
+    /// T2S Template.
+    T2S,
     /// No CPU template is used.
     None,
 }
@@ -257,6 +262,7 @@ impl fmt::Display for CpuFeaturesTemplate {
         match self {
             CpuFeaturesTemplate::C3 => write!(f, "C3"),
             CpuFeaturesTemplate::T2 => write!(f, "T2"),
+            CpuFeaturesTemplate::T2S => write!(f, "T2S"),
             CpuFeaturesTemplate::None => write!(f, "None"),
         }
     }
@@ -276,12 +282,13 @@ mod tests {
     fn test_display_cpu_features_template() {
         assert_eq!(CpuFeaturesTemplate::C3.to_string(), "C3".to_string());
         assert_eq!(CpuFeaturesTemplate::T2.to_string(), "T2".to_string());
+        assert_eq!(CpuFeaturesTemplate::T2S.to_string(), "T2S".to_string());
     }
 
     #[test]
     fn test_display_vm_config_error() {
-        let expected_str = "The vCPU number is invalid! The vCPU number can only \
-                            be 1 or an even number when SMT is enabled.";
+        let expected_str = "The vCPU number is invalid! The vCPU number can only be 1 or an even \
+                            number when SMT is enabled.";
         assert_eq!(VmConfigError::InvalidVcpuCount.to_string(), expected_str);
 
         let expected_str = "The memory size (MiB) is invalid.";

@@ -82,10 +82,10 @@ for Firecracker processes that are unresponsive, and kills them, by SIGKILL.
 
 ## Jailer Configuration
 
-For assuring secure isolation in production deployments, Firecracker should
-must be started using the `jailer` binary that's part of each Firecracker
-release, or executed under process constraints equal or more restrictive than
-those in the jailer. For more about Firecracker sandboxing please see
+For assuring secure isolation in production deployments, Firecracker should be
+started using the `jailer` binary that's part of each Firecracker release, or
+executed under process constraints equal or more restrictive than those in the jailer.
+For more about Firecracker sandboxing please see
 [Firecracker design](design.md)
 
 The Jailer process applies
@@ -127,7 +127,7 @@ Here are some recommendations on how to limit the process's resources:
 
 - Jailer's `resource-limit` provides control on the disk usage through:
   - `fsize` - limits the size in bytes for files created by the process
-  - `no-file` - specifies a value one greater than the maximum file
+  - `no-file` - specifies a value greater than the maximum file
     descriptor number that can be opened by the process. If not specified,
     it defaults to 4096.
 
@@ -204,7 +204,7 @@ configuring rate limiters for the network interface as explained within
 [Network Interface documentation](api_requests/patch-network-interface.md),
 or by using one of the tools presented below:
 
-- `tc qdisk` - manipulate traffic control settings by configuring filters.
+- `tc qdisc` - manipulate traffic control settings by configuring filters.
 
 When traffic enters a classful qdisc, the filters are consulted and the
 packet is enqueued into one of the classes within. Besides
@@ -293,70 +293,55 @@ echo "KSM: ENABLED (Recommendation: DISABLED)"
 
 #### Check for mitigations against Spectre Side Channels
 
-##### Branch Target Injection mitigation (Spectre V2)
+##### Branch Target Injection mitigation (Spectre V2, including Spectre-BHB)
 
-**Intel and AMD**
-Where available, Intel recommends using Enhanced Indirect Branch Restricted
-Speculation (eIBRS) together with microcode supporting conditional
-Indirect Branch Prediction Barriers (IBPB).
+###### Intel and AMD
 
-If eIBRS is not available, use a kernel compiled with retpoline and run on
-hardware with microcode supporting IBPB and
-Indirect Branch Restricted Speculation (IBRS).
+We recommend using a kernel compiled with eIBRS or IBRS, together with microcode
+supporting conditional Indirect Branch Prediction Barriers (IBPB).
 
 Verification can be done by running:
 
 ```bash
-(grep -Eq '^Mitigation: Full [[:alpha:]]+ retpoline,
-IBPB: conditional, IBRS_FW' \
-/sys/devices/system/cpu/vulnerabilities/spectre_v2 && \
-echo "retpoline, IBPB, IBRS: ENABLED (OK)") \
-|| (grep -Eq '^Mitigation: Enhanced IBRS,
-IBPB: conditional' \
-/sys/devices/system/cpu/vulnerabilities/spectre_v2 && \
-echo "eIBRS, IBPB: ENABLED (OK)") \
-|| echo "eIBRS, IBPB: DISABLED (Recommendation: ENABLED)"
+cat /sys/devices/system/cpu/vulnerabilities/spectre_v2
 ```
 
-**ARM** The mitigations for ARM systems are patched in all linux stable versions
-starting with 4.16. More information on the processors vulnerable to this type
+The output should mention the following mitigations being in use:
+
+- One of Retpolines (pre-Skylake CPU), IBRS (Skylake), or Enhanced IBRS (Cascade
+  Lake and later)
+- `IBPB` at least `conditional`
+
+###### ARM64
+
+We recommend using a kernel compiled with `MITIGATE_SPECTRE_BRANCH_HISTORY`.
+
+More information on the processors vulnerable to this type
 of attack and detailed information on the mitigations can be found in the
 [ARM security documentation](https://developer.arm.com/support/arm-security-updates/speculative-processor-vulnerability).
 
 Verification can be done by running:
 
 ```bash
-(grep -q "^Mitigation:" /sys/devices/system/cpu/vulnerabilities/spectre_v2 || \
-grep -q "^Not affected$" /sys/devices/system/cpu/vulnerabilities/spectre_v2) && \
+grep -q "^(Mitigation: CSV2, BHB|Not affected)$" \
+/sys/devices/system/cpu/vulnerabilities/spectre_v2 && \
 echo "SPECTRE V2 -> OK" || echo "SPECTRE V2 -> NOT OK"
 ```
-
-##### Spectre-BHB
-
-**All hosts** Use latest default SpectreV2 mitigations by keeping kernels up to
-date. Additionally, use a host kernel that has unprivileged BPF disabled by
-enabling `BPF_UNPRIV_DEFAULT_OFF` in the kernel config or by writing `1` or `2`
-to `/proc/sys/kernel/unprivileged_bpf_disabled`.
-
-**Intel** . For an extra layer of security, while trading off performance, you
-can add `spectrev2=eibrs,lfence` or more strictly, `spectrev2=eibrs,retpoline`
-to the kernel commandline of the host.
 
 ##### Bounds Check Bypass Store (Spectre V1)
 
 Verification for mitigation against Spectre V1 can be done:
 
 ```bash
-(grep -q "^Mitigation:" /sys/devices/system/cpu/vulnerabilities/spectre_v1 || \
-grep -q "^Not affected$" /sys/devices/system/cpu/vulnerabilities/spectre_v1) && \
+grep -q "^(Mitigation:|Not affected)$" \
+/sys/devices/system/cpu/vulnerabilities/spectre_v1 && \
 echo "SPECTRE V1 -> OK" || echo "SPECTRE V1 -> NOT OK"
 ```
 
-#### [Intel only] Apply L1 Terminal Fault (L1TF) mitigation
+##### [Intel only] Apply L1 Terminal Fault (L1TF) mitigation
 
 These features provide mitigation for Foreshadow/L1TF side-channel issue on
 affected hardware.
-
 They can be enabled by adding the following Linux kernel boot parameter:
 
 ```console
@@ -365,7 +350,6 @@ l1tf=full,force
 
 which will also implicitly disable SMT.  This will apply the mitigation when
 execution context switches into microVMs.
-
 Verification can be done by running:
 
 ```bash
@@ -378,30 +362,44 @@ echo "$cond: DISABLED (Recommendation: ENABLED)"; done
 
 See more details [here](https://www.kernel.org/doc/html/latest/admin-guide/hw-vuln/l1tf.html#guest-mitigation-mechanisms).
 
-#### Apply Speculative Store Bypass (SSBD) mitigation
+##### Apply Speculative Store Bypass (SSBD) mitigation
 
 This will mitigate variants of Spectre side-channel issues such as
-Speculative Store Bypass and SpectreNG.
+Speculative Store Bypass (Spectre v4) and SpectreNG.
 
-On x86_64 systems, it can be enabled by adding the following Linux kernel boot
+We recommend applying SSBD to Firecracker and the host kernel.
+
+###### X86_64
+
+On x86_64 systems, this can be done using the following kernel cmdline
 parameter:
 
 ```console
-spec_store_bypass_disable=seccomp
+spec_store_bypass_disable=on
 ```
 
-which will apply SSB if seccomp is enabled by Firecracker.
+Unfortunately, this applies SSBD to all the other processes running on the
+host as well.
 
-On aarch64 systems, it is enabled by Firecracker
-[using the `prctl` interface][3]. However, this is only available on host
-kernels Linux >=4.17 and also Amazon Linux 4.14. Alternatively, a global
-mitigation can be enabled by adding the following Linux kernel boot parameter:
+###### ARM64
+
+On aarch64 systems, SSBD can be applied to the kernel by using the following
+kernel cmdline parameter:
+
+```console
+ssbd=kernel
+```
+
+SSBD is applied to Firecracker by [using the `prctl` interface][3].
+However, this is only available on host kernels Linux >=4.17 and also Amazon
+Linux 4.14. Alternatively, a global mitigation can be enabled by adding the
+following Linux kernel cmdline parameter:
 
 ```console
 ssbd=force-on
 ```
 
-Verification can be done by running:
+The following command can be used to check if SSBD is applied to Firecracker:
 
 ```bash
 cat /proc/$(pgrep firecracker | head -n1)/status | grep Speculation_Store_Bypass
@@ -414,6 +412,16 @@ Output shows one of the following:
 - thread mitigated
 - thread force mitigated
 - globally mitigated
+
+##### Hardening other processes
+
+For any process running on the host that communicates with Firecracker
+and handles sensitive data, we recommend hardening it against spectre-like
+attacks by:
+
+- compiling it with speculative load hardening
+- compiling it with retpolines
+- applying SSBD to it
 
 #### Use memory with Rowhammer mitigation support
 
@@ -492,6 +500,78 @@ stable kernel releases. Please follow [kernel.org](https://www.kernel.org/) and
 once the fix is available in your stable release please update the host kernel.
 If you are not using a vanilla kernel, please check with Linux distro provider.
 
+#### [CVE-2022-1789](https://nvd.nist.gov/vuln/detail/CVE-2022-1789)
+
+##### Description
+
+With shadow paging enabled, the `INVPCID` instruction results in a call to
+`kvm_mmu_invpcid_gva`. If `INVPCID` is executed with `CR0.PG=0`, the invlpg
+callback is not set and the result is a NULL pointer dereference.
+
+##### Impact
+
+A malicious attacker running on the guest can cause a DoS (Denial of Service).
+
+##### Vulnerable systems
+
+The vulnerability affects systems that have shadow paging enabled and use
+the following host kernel versions:
+
+- 5.10.x prior to 5.10.119
+- 5.15.x prior to 5.15.44
+- 5.17.x prior to 5.17.12
+
+Systems that use extended page table are not susceptible to this attack.
+To verify that extended page table is enabled, run the following command:
+
+```bash
+cat /sys/module/kvm_intel/parameters/ept
+```
+
+If the output is `Y` then KVM uses extended page table, otherwise if `N`
+then KVM uses shadow pages.
+
+##### Mitigation
+
+The vulnerability is fixed by [this commit][4]. The fix was integrated in
+5.10.119, 5.15.44 and 5.17.12 kernel releases.
+
+#### [CVE-2022-26373](https://nvd.nist.gov/vuln/detail/CVE-2022-26373)
+
+##### Description
+
+Isolation boundaries between processes are vulnerable to a return stack
+buffer underflow. This may result in some processors allowing neighbouring
+guests to access data in other processes via local access.
+
+This issue is not impacted by environments that make use of `RETPOLINE` as
+this results in [RSB stuffing implemented by KVM][5] which Firecracker uses
+exclusively.
+
+##### Impact
+
+A malicious attacker running on a guest can access information in other guests
+running on the same host.
+
+##### Vulnerable systems
+
+The vulnerability affects systems that do not have `RETPOLINE` enabled
+and use the following host kernel versions:
+
+- 5.10.x prior to 5.10.135
+- 5.15.x prior to 5.15.57
+
+See earlier in this document for checking `RETPOLINE` configuration.
+You can check the version of the kernel being used with:
+
+```
+uname -r
+```
+
+##### Mitigation
+
+The vulnerability is fixed in [these releases][6] by the [commits merged upstream][7].
+
 #### [ARM only] Physical counter directly passed through to the guest
 
 On ARM, the physical counter (i.e `CNTPCT`) it is returning the
@@ -503,3 +583,7 @@ to trap and control this in the hypervisor.
 [1]: https://elixir.free-electrons.com/linux/v4.14.203/source/virt/kvm/arm/hyp/timer-sr.c#L63
 [2]: https://lists.cs.columbia.edu/pipermail/kvmarm/2017-January/023323.html
 [3]: https://elixir.bootlin.com/linux/v4.17/source/include/uapi/linux/prctl.h#L212
+[4]: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit?id=9f46c187e2e680ecd9de7983e4d081c3391acc76
+[5]: https://elixir.bootlin.com/linux/v5.10.131/source/arch/x86/kvm/vmx/vmenter.S#L78
+[6]: https://alas.aws.amazon.com/cve/html/CVE-2022-26373.html
+[7]: https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=ce114c866860

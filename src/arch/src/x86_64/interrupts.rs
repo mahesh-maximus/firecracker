@@ -8,12 +8,15 @@
 use kvm_bindings::kvm_lapic_state;
 use kvm_ioctls::VcpuFd;
 use utils::byte_order;
+
 /// Errors thrown while configuring the LAPIC.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
-    /// Failure in retrieving the LAPIC configuration.
+    /// Failure in getting the LAPIC configuration.
+    #[error("Failure in getting the LAPIC configuration: {0}")]
     GetLapic(kvm_ioctls::Error),
-    /// Failure in modifying the LAPIC configuration.
+    /// Failure in setting the LAPIC configuration.
+    #[error("Failure in setting the LAPIC configuration: {0}")]
     SetLapic(kvm_ioctls::Error),
 }
 type Result<T> = std::result::Result<T, Error>;
@@ -65,8 +68,9 @@ pub fn set_lint(vcpu: &VcpuFd) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use kvm_ioctls::Kvm;
+
+    use super::*;
 
     const KVM_APIC_REG_SIZE: usize = 0x400;
 
@@ -89,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_apic_delivery_mode() {
-        let mut v: Vec<u32> = (0..20).map(|_| utils::rand::xor_psuedo_rng_u32()).collect();
+        let mut v: Vec<u32> = (0..20).map(|_| utils::rand::xor_pseudo_rng_u32()).collect();
 
         v.iter_mut()
             .for_each(|x| *x = set_apic_delivery_mode(*x, 2));
@@ -102,7 +106,7 @@ mod tests {
         let kvm = Kvm::new().unwrap();
         assert!(kvm.check_extension(kvm_ioctls::Cap::Irqchip));
         let vm = kvm.create_vm().unwrap();
-        //the get_lapic ioctl will fail if there is no irqchip created beforehand.
+        // the get_lapic ioctl will fail if there is no irqchip created beforehand.
         assert!(vm.create_irq_chip().is_ok());
         let vcpu = vm.create_vcpu(0).unwrap();
         let klapic_before: kvm_lapic_state = vcpu.get_lapic().unwrap();

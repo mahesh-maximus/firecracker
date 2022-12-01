@@ -12,11 +12,11 @@ pub const BOOT_STACK_POINTER: u64 = 0x8ff0;
 
 /// Kernel command line start address.
 pub const CMDLINE_START: u64 = 0x20000;
-/// Kernel command line start address maximum size.
-pub const CMDLINE_MAX_SIZE: usize = 0x10000;
+/// Kernel command line maximum size.
+pub const CMDLINE_MAX_SIZE: usize = 2048;
 
 /// Start of the high memory.
-pub const HIMEM_START: u64 = 0x0010_0000; //1 MB.
+pub const HIMEM_START: u64 = 0x0010_0000; // 1 MB.
 
 // Typically, on x86 systems 24 IRQs are used (0-23).
 /// First usable IRQ ID for virtio device interrupts on x86_64.

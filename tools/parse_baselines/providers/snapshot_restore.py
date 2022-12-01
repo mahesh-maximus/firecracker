@@ -12,7 +12,7 @@ from providers.types import DataParser
 # that were not caught while gathering baselines. This provides
 # slightly better reliability, while not affecting regression
 # detection.
-DELTA_EXTRA_MARGIN = 4
+DELTA_EXTRA_MARGIN = 6
 
 
 # pylint: disable=R0903
@@ -22,18 +22,25 @@ class SnapshotRestoreDataParser(DataParser):
     # pylint: disable=W0102
     def __init__(self, data_provider: Iterator):
         """Initialize the data parser."""
-        super().__init__(data_provider, [
-            "restore_latency/P50",
-            "restore_latency/P90",
-        ])
+        super().__init__(
+            data_provider,
+            [
+                "latency/P50",
+                "latency/P90",
+            ],
+        )
 
-    # pylint: disable=R0201
     def calculate_baseline(self, data: List[float]) -> dict:
         """Return the target and delta values, given a list of data points."""
         avg = statistics.mean(data)
-        stddev = statistics.stdev(data)
+        min_ = min(data)
+        max_ = max(data)
+
+        min_delta = 100 * abs(avg - min_) / avg
+        max_delta = 100 * abs(avg - max_) / avg
+        delta = max(max_delta, min_delta)
+
         return {
-            'target': math.ceil(round(avg, 2)),
-            'delta_percentage':
-                math.ceil(3 * stddev/avg * 100) + DELTA_EXTRA_MARGIN
+            "target": round(avg, 3),
+            "delta_percentage": math.ceil(delta) + DELTA_EXTRA_MARGIN,
         }

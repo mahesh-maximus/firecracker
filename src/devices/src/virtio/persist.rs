@@ -11,7 +11,8 @@ use snapshot::Persist;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 use virtio_gen::virtio_ring::VIRTIO_RING_F_EVENT_IDX;
-use vm_memory::{address::Address, GuestAddress, GuestMemoryMmap};
+use vm_memory::address::Address;
+use vm_memory::{GuestAddress, GuestMemoryMmap};
 
 use super::device::*;
 use super::queue::*;
@@ -22,7 +23,7 @@ pub enum Error {
     InvalidInput,
 }
 
-#[derive(Clone, Debug, PartialEq, Versionize)]
+#[derive(Clone, Debug, PartialEq, Eq, Versionize)]
 // NOTICE: Any changes to this structure require a snapshot version bump.
 pub struct QueueState {
     /// The maximal size in elements offered by the device
@@ -90,7 +91,7 @@ impl Persist<'_> for Queue {
 }
 
 /// State of a VirtioDevice.
-#[derive(Clone, Debug, PartialEq, Versionize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Versionize)]
 // NOTICE: Any changes to this structure require a snapshot version bump.
 pub struct VirtioDeviceState {
     pub device_type: u32,
@@ -139,7 +140,7 @@ impl VirtioDeviceState {
             .iter()
             .map(|queue_state| {
                 // Safe to unwrap, `Queue::restore` has no error case.
-                let mut queue = Queue::restore((), &queue_state).unwrap();
+                let mut queue = Queue::restore((), queue_state).unwrap();
                 if uses_notif_suppression {
                     queue.enable_notif_suppression();
                 }
@@ -164,7 +165,7 @@ impl VirtioDeviceState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Versionize)]
+#[derive(Clone, Debug, PartialEq, Eq, Versionize)]
 // NOTICE: Any changes to this structure require a snapshot version bump.
 pub struct MmioTransportState {
     // The register where feature bits are stored.
@@ -212,14 +213,14 @@ impl Persist<'_> for MmioTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::virtio::mmio::tests::DummyDevice;
-    use crate::virtio::{net, Block, Net, Vsock, VsockUnixBackend};
+    use utils::tempfile::TempFile;
 
+    use super::*;
     use crate::virtio::block::device::FileEngineType;
     use crate::virtio::block::test_utils::default_block_with_path;
+    use crate::virtio::mmio::tests::DummyDevice;
     use crate::virtio::test_utils::default_mem;
-    use utils::tempfile::TempFile;
+    use crate::virtio::{net, Block, Net, Vsock, VsockUnixBackend};
 
     const DEFAULT_QUEUE_MAX_SIZE: u16 = 256;
     impl Default for QueueState {
@@ -234,19 +235,6 @@ mod tests {
                 next_avail: Wrapping(0),
                 next_used: Wrapping(0),
                 num_added: Wrapping(0),
-            }
-        }
-    }
-
-    impl Default for VirtioDeviceState {
-        fn default() -> VirtioDeviceState {
-            VirtioDeviceState {
-                device_type: 0,
-                avail_features: 0,
-                acked_features: 0,
-                queues: vec![],
-                interrupt_status: 0,
-                activated: false,
             }
         }
     }

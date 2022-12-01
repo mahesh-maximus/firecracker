@@ -37,7 +37,9 @@ pub mod leaf_0x1 {
         // Virtual Machine Extensions
         pub const VMX_BITINDEX: u32 = 5;
         // 6 = SMX (Safer Mode Extensions)
+        pub const SMX_BITINDEX: u32 = 6;
         // 7 = EIST (Enhanced Intel SpeedStep® technology)
+        pub const EIST_BITINDEX: u32 = 7;
         // TM2 = Thermal Monitor 2
         pub const TM2_BITINDEX: u32 = 8;
         // CNXT_ID = L1 Context ID (L1 data cache can be set to adaptive/shared mode)
@@ -50,6 +52,7 @@ pub mod leaf_0x1 {
         // PDCM = Perfmon and Debug Capability
         pub const PDCM_BITINDEX: u32 = 15;
         // 18 = DCA Direct Cache Access (prefetch data from a memory mapped device)
+        pub const DCA_BITINDEX: u32 = 18;
         pub const MOVBE_BITINDEX: u32 = 22;
         pub const TSC_DEADLINE_TIMER_BITINDEX: u32 = 24;
         pub const OSXSAVE_BITINDEX: u32 = 27;
@@ -58,12 +61,16 @@ pub mod leaf_0x1 {
     }
 
     pub mod edx {
+        pub const MCE_BITINDEX: u32 = 7; // Memory Check Exception
+        pub const MTRR_BITINDEX: u32 = 12; // Memory Type Range Registers
         pub const PSN_BITINDEX: u32 = 18; // Processor Serial Number
+        pub const SSE42_BITINDEX: u32 = 20; // SSE 4.2
         pub const DS_BITINDEX: u32 = 21; // Debug Store.
         pub const ACPI_BITINDEX: u32 = 22; // Thermal Monitor and Software Controlled Clock Facilities.
         pub const SS_BITINDEX: u32 = 27; // Self Snoop
         pub const HTT_BITINDEX: u32 = 28; // Max APIC IDs reserved field is valid
         pub const TM_BITINDEX: u32 = 29; // Thermal Monitor.
+        pub const IA64_BITINDEX: u32 = 30; // IA64 processor emulating x86
         pub const PBE_BITINDEX: u32 = 31; // Pending Break Enable.
     }
 }
@@ -83,7 +90,6 @@ pub mod leaf_0x4 {
 
     pub mod eax {
         use crate::bit_helper::BitRange;
-
         // inherit eax from leaf_cache_parameters
         pub use crate::cpu_leaf::leaf_cache_parameters::eax::*;
 
@@ -127,6 +133,7 @@ pub mod leaf_0x7 {
             // Intel® Resource Director Technology (Intel® RDT) Monitoring
             pub const RDT_M_BITINDEX: u32 = 12;
             // 13 = Deprecates FPU CS and FPU DS values if 1
+            pub const FPU_CS_DS_DEPRECATE_BITINDEX: u32 = 13;
             // Memory Protection Extensions
             pub const MPX_BITINDEX: u32 = 14;
             // RDT = Intel® Resource Director Technology
@@ -140,9 +147,10 @@ pub mod leaf_0x7 {
             // 20 = SMAP (Supervisor-Mode Access Prevention)
             // AVX512IFMA = AVX-512 Integer Fused Multiply-Add Instructions
             pub const AVX512IFMA_BITINDEX: u32 = 21;
-            // 21 = PCOMMIT intruction
-            // 22 reserved
-            // CLFLUSHOPT (flushing multiple cache lines in parallel within a single logical processor)
+            // 22 = PCOMMIT intruction
+            pub const PCOMMIT_BITINDEX: u32 = 22;
+            // CLFLUSHOPT (flushing multiple cache lines in parallel within a single logical
+            // processor)
             pub const CLFLUSHOPT_BITINDEX: u32 = 23;
             // CLWB = Cache Line Write Back
             pub const CLWB_BITINDEX: u32 = 24;
@@ -186,8 +194,8 @@ pub mod leaf_0x7 {
             pub const AVX512_VPOPCNTDQ_BITINDEX: u32 = 14;
             // LA57 = 5-level page tables.
             pub const LA57: u32 = 16;
-            // 21 - 17 = The value of MAWAU used by the BNDLDX and BNDSTX instructions in 64-bit mode.
-            // Read Processor ID
+            // 21 - 17 = The value of MAWAU used by the BNDLDX and BNDSTX instructions in 64-bit
+            // mode. Read Processor ID
             pub const RDPID_BITINDEX: u32 = 22;
             // 23 - 29 reserved
             // SGX_LC = SGX Launch Configuration

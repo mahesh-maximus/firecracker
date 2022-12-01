@@ -8,9 +8,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use libc::O_NONBLOCK;
-use serde::{Deserialize, Serialize};
-
 use rate_limiter::{BucketUpdate, RateLimiter, TokenBucket};
+use serde::{Deserialize, Serialize};
 
 /// Wrapper for configuring the balloon device.
 pub mod balloon;
@@ -46,7 +45,7 @@ pub mod vsock;
 
 /// A public-facing, stateless structure, holding all the data we need to create a TokenBucket
 /// (live) object.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TokenBucketConfig {
     /// See TokenBucket::size.
     pub size: u64,
@@ -72,7 +71,7 @@ impl From<&TokenBucket> for TokenBucketConfig {
 
 /// A public-facing, stateless structure, holding all the data we need to create a RateLimiter
 /// (live) object.
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimiterConfig {
     /// Data used to initialize the RateLimiter::bandwidth bucket.
@@ -244,7 +243,7 @@ mod tests {
         let mut fw = FcLineWriter::new(maybe_fifo.unwrap());
 
         let msg = String::from("some message");
-        assert!(fw.write(&msg.as_bytes()).is_ok());
+        assert!(fw.write(msg.as_bytes()).is_ok());
         assert!(fw.flush().is_ok());
     }
 }

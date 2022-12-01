@@ -1,10 +1,10 @@
 // Copyright 2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+use std::fs::File;
 use std::io::{Seek, SeekFrom, Write};
 use std::result::Result;
 
-use std::fs::File;
 use vm_memory::{Bytes, GuestAddress, GuestMemoryError, GuestMemoryMmap};
 
 #[derive(Debug)]
@@ -19,6 +19,7 @@ pub struct SyncFileEngine {
     file: File,
 }
 
+// SAFETY: `File` is send and ultimately a POD.
 unsafe impl Send for SyncFileEngine {}
 
 impl SyncFileEngine {

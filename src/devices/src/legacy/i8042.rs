@@ -5,37 +5,34 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the THIRD-PARTY file.
 
-use logger::{error, warn, IncMetric, METRICS};
-use std::fmt;
 use std::num::Wrapping;
-use std::{io, result};
+use std::{fmt, io, result};
+
+use logger::{error, warn, IncMetric, METRICS};
 use utils::eventfd::EventFd;
 
 use crate::bus::BusDevice;
 
+/// Errors thrown by the i8042 device.
 #[derive(Debug)]
 pub enum Error {
-    CloneCpuResetEvt(io::Error),
+    /// Failure in triggering the keyboard interrupt (guest disabled).
     KbdInterruptDisabled,
+    /// Failure in triggering the keyboard interrupt.
     KbdInterruptFailure(io::Error),
+    /// Internal i8042 buffer is full.
     InternalBufferFull,
 }
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::CloneCpuResetEvt(io_err) => write!(
-                f,
-                "Could not clone CPU reset eventfd: {}.",
-                io_err.to_string()
-            ),
             Error::KbdInterruptDisabled => {
                 write!(f, "Keyboard interrupt disabled by guest driver.",)
             }
-            Error::KbdInterruptFailure(io_err) => write!(
-                f,
-                "Could not trigger keyboard interrupt: {}.",
-                io_err.to_string()
-            ),
+            Error::KbdInterruptFailure(io_err) => {
+                write!(f, "Could not trigger keyboard interrupt: {io_err}.",)
+            }
             Error::InternalBufferFull => write!(f, "i8042 internal buffer full."),
         }
     }
@@ -116,37 +113,7 @@ impl I8042Device {
         }
     }
 
-    /// Returns a clone of the CPU reset event fd
-    pub fn get_reset_evt_clone(&self) -> Result<EventFd> {
-        self.reset_evt.try_clone().map_err(Error::CloneCpuResetEvt)
-    }
-
-    pub fn trigger_kbd_interrupt(&self) -> Result<()> {
-        if (self.control & CB_KBD_INT) == 0 {
-            warn!("Failed to trigger i8042 kbd interrupt (disabled by guest OS)");
-            return Err(Error::KbdInterruptDisabled);
-        }
-        self.kbd_interrupt_evt
-            .write(1)
-            .map_err(Error::KbdInterruptFailure)
-    }
-
-    pub fn trigger_key(&mut self, key: u16) -> Result<()> {
-        if key & 0xff00 != 0 {
-            // Check if there is enough room in the buffer, before pushing an extended (2-byte) key.
-            if BUF_SIZE - self.buf_len() < 2 {
-                return Err(Error::InternalBufferFull);
-            }
-            self.push_byte((key >> 8) as u8)?;
-        }
-        self.push_byte((key & 0xff) as u8)?;
-
-        match self.trigger_kbd_interrupt() {
-            Ok(_) | Err(Error::KbdInterruptDisabled) => Ok(()),
-            Err(e) => Err(e),
-        }
-    }
-
+    /// Signal a ctrl-alt-del (reset) event.
     #[inline]
     pub fn trigger_ctrl_alt_del(&mut self) -> Result<()> {
         // The CTRL+ALT+DEL sequence is 4 bytes in total (1 extended key + 2 normal keys).
@@ -158,6 +125,32 @@ impl I8042Device {
         self.trigger_key(KEY_ALT)?;
         self.trigger_key(KEY_DEL)?;
         Ok(())
+    }
+
+    fn trigger_kbd_interrupt(&self) -> Result<()> {
+        if (self.control & CB_KBD_INT) == 0 {
+            warn!("Failed to trigger i8042 kbd interrupt (disabled by guest OS)");
+            return Err(Error::KbdInterruptDisabled);
+        }
+        self.kbd_interrupt_evt
+            .write(1)
+            .map_err(Error::KbdInterruptFailure)
+    }
+
+    fn trigger_key(&mut self, key: u16) -> Result<()> {
+        if key & 0xff00 != 0 {
+            // Check if there is enough room in the buffer, before pushing an extended (2-byte) key.
+            if BUF_SIZE - self.buf_len() < 2 {
+                return Err(Error::InternalBufferFull);
+            }
+            self.push_byte((key >> 8) as u8)?;
+        }
+        self.push_byte((key & 0xff) as u8)?;
+
+        match self.trigger_kbd_interrupt() {
+            Ok(_) | Err(Error::KbdInterruptDisabled) => Ok(()),
+            Err(err) => Err(err),
+        }
     }
 
     #[inline]
@@ -246,8 +239,8 @@ impl BusDevice for I8042Device {
                 // The guest wants to assert the CPU reset line. We handle that by triggering
                 // our exit event fd. Meaning Firecracker will be exiting as soon as the VMM
                 // thread wakes up to handle this event.
-                if let Err(e) = self.reset_evt.write(1) {
-                    error!("Failed to trigger i8042 reset event: {:?}", e);
+                if let Err(err) = self.reset_evt.write(1) {
+                    error!("Failed to trigger i8042 reset event: {:?}", err);
                     METRICS.i8042.error_count.inc();
                 }
                 METRICS.i8042.reset_count.inc();
@@ -341,7 +334,7 @@ mod tests {
             EventFd::new(libc::EFD_NONBLOCK).unwrap(),
             EventFd::new(libc::EFD_NONBLOCK).unwrap(),
         );
-        let reset_evt = i8042.get_reset_evt_clone().unwrap();
+        let reset_evt = i8042.reset_evt.try_clone().unwrap();
 
         // Check if reading in a 2-length array doesn't have side effects.
         let mut data = [1, 2];

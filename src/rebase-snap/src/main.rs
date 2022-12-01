@@ -1,6 +1,10 @@
 // Copyright 2022 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#![warn(clippy::ptr_as_ptr)]
+#![warn(clippy::undocumented_unsafe_blocks)]
+#![warn(clippy::cast_lossless)]
+
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom};
 use std::os::unix::io::AsRawFd;
@@ -44,11 +48,10 @@ fn build_arg_parser<'a>() -> ArgParser<'a> {
 }
 
 fn extract_args<'a>(arg_parser: &'a mut ArgParser<'a>) -> &'a Arguments<'a> {
-    arg_parser.parse_from_cmdline().unwrap_or_else(|e| {
+    arg_parser.parse_from_cmdline().unwrap_or_else(|err| {
         panic!(
-            "Arguments parsing error: {} \n\n\
-             For more information try --help.",
-            e
+            "Arguments parsing error: {} \n\nFor more information try --help.",
+            err
         );
     });
 
@@ -100,11 +103,13 @@ fn rebase(base_file: &mut File, diff_file: &mut File) -> Result<(), Error> {
             base_file
                 .seek(SeekFrom::Start(cursor))
                 .map_err(Error::Seek)?;
+
+            // SAFETY: Safe because the parameters are valid.
             let num_transferred_bytes = unsafe {
                 libc::sendfile64(
                     base_file.as_raw_fd(),
                     diff_file.as_raw_fd(),
-                    &mut cursor as *mut u64 as *mut i64,
+                    (&mut cursor as *mut u64).cast::<i64>(),
                     block_end.saturating_sub(cursor) as usize,
                 )
             };
@@ -121,26 +126,27 @@ fn main() {
     let mut arg_parser = build_arg_parser();
     let args = extract_args(&mut arg_parser);
     let (mut base_file, mut diff_file) =
-        parse_args(args).unwrap_or_else(|e| panic!("Error parsing the cmd line args: {:?}", e));
+        parse_args(args).unwrap_or_else(|err| panic!("Error parsing the cmd line args: {:?}", err));
 
     rebase(&mut base_file, &mut diff_file)
-        .unwrap_or_else(|e| panic!("Error merging the files: {:?}", e));
+        .unwrap_or_else(|err| panic!("Error merging the files: {:?}", err));
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::{Seek, SeekFrom, Write};
     use std::os::unix::fs::FileExt;
 
     use utils::{rand, tempfile};
 
+    use super::*;
+
     macro_rules! assert_err {
         ($expression:expr, $($pattern:tt)+) => {
             match $expression {
                 Err($($pattern)+) => (),
-                ref e =>  {
-                    println!("expected `{}` but got `{:?}`", stringify!($($pattern)+), e);
+                ref err =>  {
+                    println!("expected `{}` but got `{:?}`", stringify!($($pattern)+), err);
                     assert!(false)
                 }
             }
@@ -257,17 +263,17 @@ mod tests {
             // 1. Populated block both in base and diff file
             let base_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
             base_file.write_all(base_block.as_bytes()).unwrap();
-            let mut diff_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
+            let diff_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
             diff_file.write_all(diff_block.as_bytes()).unwrap();
-            expected_result.append(unsafe { diff_block.as_mut_vec() });
+            expected_result.append(&mut diff_block.into_bytes());
 
             // 2. Populated block in base file, hole in diff file
-            let mut base_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
+            let base_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
             base_file.write_all(base_block.as_bytes()).unwrap();
             diff_file
                 .seek(SeekFrom::Current(block_size as i64))
                 .unwrap();
-            expected_result.append(unsafe { base_block.as_mut_vec() });
+            expected_result.append(&mut base_block.into_bytes());
 
             // 3. Populated block in base file, zeroes block in diff file
             let base_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
@@ -281,17 +287,17 @@ mod tests {
             check_file_content(&mut base_file, &expected_result);
 
             // 4. The diff file is bigger
-            let mut diff_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
-            diff_file.write_all(&diff_block.as_bytes()).unwrap();
-            expected_result.append(unsafe { diff_block.as_mut_vec() });
+            let diff_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
+            diff_file.write_all(diff_block.as_bytes()).unwrap();
+            expected_result.append(&mut diff_block.into_bytes());
             // Rebase and check the result
             rebase(&mut base_file, &mut diff_file).unwrap();
             check_file_content(&mut base_file, &expected_result);
 
             // 5. The base file is bigger
-            let mut base_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
+            let base_block = rand::rand_alphanumerics(block_size).into_string().unwrap();
             base_file.write_all(base_block.as_bytes()).unwrap();
-            expected_result.append(unsafe { base_block.as_mut_vec() });
+            expected_result.append(&mut base_block.into_bytes());
             // Rebase and check the result
             rebase(&mut base_file, &mut diff_file).unwrap();
             check_file_content(&mut base_file, &expected_result);

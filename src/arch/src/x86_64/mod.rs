@@ -16,18 +16,18 @@ pub mod msr;
 /// Logic for configuring x86_64 registers.
 pub mod regs;
 
-use crate::InitrdConfig;
 use linux_loader::configurator::linux::LinuxBootConfigurator;
 use linux_loader::configurator::{BootConfigurator, BootParams};
 use linux_loader::loader::bootparam::boot_params;
-
 use vm_memory::{Address, GuestAddress, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+
+use crate::InitrdConfig;
 
 // Value taken from https://elixir.bootlin.com/linux/v5.10.68/source/arch/x86/include/uapi/asm/e820.h#L31
 const E820_RAM: u32 = 1;
 
 /// Errors thrown while configuring x86_64 system.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, derive_more::From)]
 pub enum Error {
     /// Invalid e820 setup params.
     E820Configuration,
@@ -114,7 +114,7 @@ pub fn configure_system(
     let himem_start = GuestAddress(layout::HIMEM_START);
 
     // Note that this puts the mptable at the last 1k of Linux's 640k base RAM
-    mptable::setup_mptable(guest_mem, num_cpus).map_err(Error::MpTableSetup)?;
+    mptable::setup_mptable(guest_mem, num_cpus)?;
 
     let mut params = boot_params::default();
 
@@ -192,8 +192,9 @@ fn add_e820_entry(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use linux_loader::loader::bootparam::boot_e820_entry;
+
+    use super::*;
 
     #[test]
     fn regions_lt_4gb() {

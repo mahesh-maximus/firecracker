@@ -4,18 +4,16 @@
 use kvm_bindings::*;
 use kvm_ioctls::DeviceFd;
 
-use crate::aarch64::gic::{
-    regs::{SimpleReg, VgicRegEngine, VgicSysRegsState},
-    Result,
-};
+use crate::aarch64::gic::regs::{SimpleReg, VgicRegEngine, VgicSysRegsState};
+use crate::aarch64::gic::Result;
 
 // CPU interface registers as detailed at page 76 from
 // https://developer.arm.com/documentation/ihi0048/latest/.
 // Address offsets are relative to the cpu interface base address defined
 // by the system memory map.
 // Criteria for the present list of registers: only R/W registers, optional registers are not saved.
-// GICC_NSAPR are not saved since they are only present in GICv2 implementations that include the GIC
-// security extensions so it might crash on some systems.
+// GICC_NSAPR are not saved since they are only present in GICv2 implementations that include the
+// GIC security extensions so it might crash on some systems.
 const GICC_CTLR: SimpleReg = SimpleReg::new(0x0, 4);
 const GICC_PMR: SimpleReg = SimpleReg::new(0x04, 4);
 const GICC_BPR: SimpleReg = SimpleReg::new(0x08, 4);
@@ -79,10 +77,13 @@ pub(crate) fn set_icc_regs(fd: &DeviceFd, mpidr: u64, state: &VgicSysRegsState) 
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::undocumented_unsafe_blocks)]
+    use std::os::unix::io::AsRawFd;
+
+    use kvm_ioctls::Kvm;
+
     use super::*;
     use crate::aarch64::gic::{create_gic, Error, GICVersion};
-    use kvm_ioctls::Kvm;
-    use std::os::unix::io::AsRawFd;
 
     #[test]
     fn test_access_icc_regs() {
@@ -96,25 +97,25 @@ mod tests {
         };
 
         let cpu_id = 0;
-        let res = get_icc_regs(&gic_fd.device_fd(), cpu_id);
+        let res = get_icc_regs(gic_fd.device_fd(), cpu_id);
         assert!(res.is_ok());
 
         let state = res.unwrap();
         assert_eq!(state.main_icc_regs.len(), 8);
         assert_eq!(state.ap_icc_regs.len(), 0);
 
-        assert!(set_icc_regs(&gic_fd.device_fd(), cpu_id, &state).is_ok());
+        assert!(set_icc_regs(gic_fd.device_fd(), cpu_id, &state).is_ok());
 
         unsafe { libc::close(gic_fd.device_fd().as_raw_fd()) };
 
-        let res = set_icc_regs(&gic_fd.device_fd(), cpu_id, &state);
+        let res = set_icc_regs(gic_fd.device_fd(), cpu_id, &state);
         assert!(res.is_err());
         assert_eq!(
             format!("{:?}", res.unwrap_err()),
             "DeviceAttribute(Error(9), true, 2)"
         );
 
-        let res = get_icc_regs(&gic_fd.device_fd(), cpu_id);
+        let res = get_icc_regs(gic_fd.device_fd(), cpu_id);
         assert!(res.is_err());
         assert_eq!(
             format!("{:?}", res.unwrap_err()),

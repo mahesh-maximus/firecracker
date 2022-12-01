@@ -11,8 +11,7 @@ botocore = "*"
 dataclasses = "*"
 nsenter = "*"
 psutil = "5.7.0"
-pycodestyle = "*"
-pydocstyle = "*"
+black = "*"
 pylint = "*"
 pytest = "*"
 pytest-timeout = "*"
@@ -22,6 +21,7 @@ requests-unixsocket = "*"
 retry = "*"
 typing-extensions = "*"
 gitlint = "0.16.0"
+pandas = "*"
 # We need to fix the gitlint version since version 0.17.0 has a problem:
 # https://pythonissues.com/issues/1410824
 

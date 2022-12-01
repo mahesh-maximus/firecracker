@@ -7,24 +7,56 @@ use std::io;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
-use mmds::{data_store::Mmds, ns::MmdsNetworkStack, persist::MmdsNetworkStackState};
-use rate_limiter::{persist::RateLimiterState, RateLimiter};
+use logger::warn;
+use mmds::data_store::Mmds;
+use mmds::ns::MmdsNetworkStack;
+use mmds::persist::MmdsNetworkStackState;
+use rate_limiter::persist::RateLimiterState;
+use rate_limiter::RateLimiter;
 use snapshot::Persist;
 use utils::net::mac::{MacAddr, MAC_ADDR_LEN};
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 use vm_memory::GuestMemoryMmap;
 
-use super::device::{ConfigSpace, Net};
+use super::device::Net;
 use super::{NUM_QUEUES, QUEUE_SIZE};
-
 use crate::virtio::persist::{Error as VirtioStateError, VirtioDeviceState};
 use crate::virtio::{DeviceState, TYPE_NET};
 
-#[derive(Clone, Versionize)]
+#[derive(Debug, Default, Clone, Versionize)]
 // NOTICE: Any changes to this structure require a snapshot version bump.
 pub struct NetConfigSpaceState {
+    #[version(end = 2, default_fn = "def_guest_mac_old")]
     guest_mac: [u8; MAC_ADDR_LEN],
+    #[version(start = 2, de_fn = "de_guest_mac_v2", ser_fn = "ser_guest_mac_v2")]
+    guest_mac_v2: Option<MacAddr>,
+}
+
+impl NetConfigSpaceState {
+    fn de_guest_mac_v2(&mut self, version: u16) -> VersionizeResult<()> {
+        // v1.1 and older versions do not have optional MAC address.
+        warn!("Optional MAC address will be set to older version.");
+        if version < 2 {
+            self.guest_mac_v2 = Some(self.guest_mac.into());
+        }
+        Ok(())
+    }
+
+    fn ser_guest_mac_v2(&mut self, _target_version: u16) -> VersionizeResult<()> {
+        // v1.1 and older versions do not have optional MAC address.
+        warn!("Saving to older snapshot version, optional MAC address will not be saved.");
+        match self.guest_mac_v2 {
+            Some(mac) => self.guest_mac = mac.into(),
+            None => self.guest_mac = Default::default(),
+        }
+        Ok(())
+    }
+
+    fn def_guest_mac_old(_: u16) -> [u8; MAC_ADDR_LEN] {
+        // v1.2 and newer don't use this field anyway
+        Default::default()
+    }
 }
 
 #[derive(Clone, Versionize)]
@@ -44,7 +76,7 @@ pub struct NetConstructorArgs {
     pub mmds: Option<Arc<Mutex<Mmds>>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, derive_more::From)]
 pub enum Error {
     CreateNet(super::Error),
     CreateRateLimiter(io::Error),
@@ -65,7 +97,8 @@ impl Persist<'_> for Net {
             tx_rate_limiter_state: self.tx_rate_limiter.save(),
             mmds_ns: self.mmds_ns.as_ref().map(|mmds| mmds.save()),
             config_space: NetConfigSpaceState {
-                guest_mac: self.config_space.guest_mac,
+                guest_mac_v2: self.guest_mac,
+                guest_mac: Default::default(),
             },
             virtio_state: VirtioDeviceState::from_device(self),
         }
@@ -76,25 +109,22 @@ impl Persist<'_> for Net {
         state: &Self::State,
     ) -> std::result::Result<Self, Self::Error> {
         // RateLimiter::restore() can fail at creating a timerfd.
-        let rx_rate_limiter = RateLimiter::restore((), &state.rx_rate_limiter_state)
-            .map_err(Error::CreateRateLimiter)?;
-        let tx_rate_limiter = RateLimiter::restore((), &state.tx_rate_limiter_state)
-            .map_err(Error::CreateRateLimiter)?;
+        let rx_rate_limiter = RateLimiter::restore((), &state.rx_rate_limiter_state)?;
+        let tx_rate_limiter = RateLimiter::restore((), &state.tx_rate_limiter_state)?;
         let mut net = Net::new_with_tap(
             state.id.clone(),
             state.tap_if_name.clone(),
-            None,
+            state.config_space.guest_mac_v2,
             rx_rate_limiter,
             tx_rate_limiter,
-        )
-        .map_err(Error::CreateNet)?;
+        )?;
 
         // We trust the MMIODeviceManager::restore to pass us an MMDS data store reference if
         // there is at least one net device having the MMDS NS present and/or the mmds version was
         // persisted in the snapshot.
         if let Some(mmds_ns) = &state.mmds_ns {
-            // We're safe calling unwrap() to discard the error, as MmdsNetworkStack::restore() always
-            // returns Ok.
+            // We're safe calling unwrap() to discard the error, as MmdsNetworkStack::restore()
+            // always returns Ok.
             net.mmds_ns = Some(
                 MmdsNetworkStack::restore(
                     constructor_args
@@ -106,21 +136,16 @@ impl Persist<'_> for Net {
             );
         }
 
-        net.queues = state
-            .virtio_state
-            .build_queues_checked(&constructor_args.mem, TYPE_NET, NUM_QUEUES, QUEUE_SIZE)
-            .map_err(Error::VirtioState)?;
+        net.queues = state.virtio_state.build_queues_checked(
+            &constructor_args.mem,
+            TYPE_NET,
+            NUM_QUEUES,
+            QUEUE_SIZE,
+        )?;
         net.irq_trigger.irq_status =
             Arc::new(AtomicUsize::new(state.virtio_state.interrupt_status));
         net.avail_features = state.virtio_state.avail_features;
         net.acked_features = state.virtio_state.acked_features;
-        net.config_space = ConfigSpace {
-            guest_mac: state.config_space.guest_mac,
-        };
-
-        net.guest_mac = Some(MacAddr::from_bytes_unchecked(
-            &state.config_space.guest_mac[..MAC_ADDR_LEN],
-        ));
 
         if state.virtio_state.activated {
             net.device_state = DeviceState::Activated(constructor_args.mem);
@@ -132,11 +157,11 @@ impl Persist<'_> for Net {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
     use crate::virtio::device::VirtioDevice;
-
     use crate::virtio::net::test_utils::{default_guest_memory, default_net, default_net_no_mmds};
-    use std::sync::atomic::Ordering;
 
     fn validate_save_and_restore(net: Net, mmds_ds: Option<Arc<Mutex<Mmds>>>) {
         let guest_mem = default_guest_memory();

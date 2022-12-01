@@ -1,10 +1,12 @@
 // Copyright 2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use super::{Error, Result};
 use std::fmt;
 use std::fmt::{Display, Formatter};
+
 use utils::syscall::SyscallReturnCode;
+
+use super::{Error, Result};
 
 // Default limit for the maximum number of file descriptors open at a time.
 const NO_FILE: u64 = 2048;
@@ -72,6 +74,8 @@ impl ResourceLimits {
             rlim_max: target,
         };
 
+        // SAFETY: Safe because `resource` is a known-valid constant, and `&rlim`
+        // is non-dangling.
         SyscallReturnCode(unsafe { libc::setrlimit(u32::from(resource) as _, &rlim) })
             .into_empty_result()
             .map_err(|_| Error::Setrlimit(resource.to_string()))
@@ -88,6 +92,7 @@ impl ResourceLimits {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::undocumented_unsafe_blocks)]
     use super::*;
 
     #[test]
