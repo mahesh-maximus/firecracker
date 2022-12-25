@@ -430,6 +430,7 @@ dependencies = [
  "rate_limiter",
  "serde",
  "snapshot",
+ "thiserror",
  "timerfd",
  "utils",
  "versionize",
@@ -685,9 +686,9 @@ dependencies = [
 
 [[package]]
 name = "linux-loader"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c30882b410003a8e7c288ede492d6b8ddfb2ea13a5e9c2d27356954067d81cb"
+checksum = "b9259ddbfbb52cc918f6bbc60390004ddd0228cf1d85f402009ff2b3d95de83f"
 dependencies = [
  "vm-memory 0.10.0",
 ]
@@ -716,6 +717,7 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
+ "thiserror",
  "utils",
  "vm-superio",
 ]
@@ -1268,6 +1270,7 @@ dependencies = [
  "net_gen",
  "serde",
  "serde_json",
+ "thiserror",
  "versionize",
  "versionize_derive",
  "vmm-sys-util",
