@@ -32,8 +32,8 @@
                                         "1vcpu_1024mb.json": {
                                             "Avg": {
                                                 "ping": {
-                                                    "target": 0.207,
-                                                    "delta_percentage": 43.1
+                                                    "target": 0.225,
+                                                    "delta_percentage": 17.1
                                                 }
                                             }
                                         }
@@ -44,8 +44,8 @@
                                         "1vcpu_1024mb.json": {
                                             "Avg": {
                                                 "ping": {
-                                                    "target": 0.225,
-                                                    "delta_percentage": 35.1
+                                                    "target": 0.238,
+                                                    "delta_percentage": 20.1
                                                 }
                                             }
                                         }
@@ -89,8 +89,8 @@
                                         "1vcpu_1024mb.json": {
                                             "Avg": {
                                                 "ping": {
-                                                    "target": 0.244,
-                                                    "delta_percentage": 30.1
+                                                    "target": 0.255,
+                                                    "delta_percentage": 24.1
                                                 }
                                             }
                                         }
@@ -101,8 +101,8 @@
                                         "1vcpu_1024mb.json": {
                                             "Avg": {
                                                 "ping": {
-                                                    "target": 0.264,
-                                                    "delta_percentage": 14.1
+                                                    "target": 0.275,
+                                                    "delta_percentage": 5.1
                                                 }
                                             }
                                         }
@@ -150,8 +150,8 @@
                                         "1vcpu_1024mb.json": {
                                             "Avg": {
                                                 "ping": {
-                                                    "target": 0.245,
-                                                    "delta_percentage": 8.1
+                                                    "target": 0.241,
+                                                    "delta_percentage": 22.1
                                                 }
                                             }
                                         }
@@ -162,8 +162,8 @@
                                         "1vcpu_1024mb.json": {
                                             "Avg": {
                                                 "ping": {
-                                                    "target": 0.261,
-                                                    "delta_percentage": 6.1
+                                                    "target": 0.262,
+                                                    "delta_percentage": 8.1
                                                 }
                                             }
                                         }
@@ -212,7 +212,7 @@
                                             "Avg": {
                                                 "ping": {
                                                     "target": 0.155,
-                                                    "delta_percentage": 3.1
+                                                    "delta_percentage": 4.1
                                                 }
                                             }
                                         }
@@ -272,8 +272,8 @@
                                         "1vcpu_1024mb.json": {
                                             "Avg": {
                                                 "ping": {
-                                                    "target": 0.032,
-                                                    "delta_percentage": 15.1
+                                                    "target": 0.034,
+                                                    "delta_percentage": 20.1
                                                 }
                                             }
                                         }
@@ -284,7 +284,68 @@
                                         "1vcpu_1024mb.json": {
                                             "Avg": {
                                                 "ping": {
-                                                    "target": 0.037,
+                                                    "target": 0.04,
+                                                    "delta_percentage": 12.1
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            "pkt_loss": {
+                                "vmlinux-4.14.bin": {
+                                    "ubuntu-18.04.ext4": {
+                                        "1vcpu_1024mb.json": {
+                                            "Avg": {
+                                                "ping": {
+                                                    "target": 0.0,
+                                                    "delta_percentage": 0.1
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "vmlinux-5.10.bin": {
+                                    "ubuntu-18.04.ext4": {
+                                        "1vcpu_1024mb.json": {
+                                            "Avg": {
+                                                "ping": {
+                                                    "target": 0.0,
+                                                    "delta_percentage": 0.1
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                ]
+            },
+            "c7g.metal": {
+                "cpus": [
+                    {
+                        "model": "ARM_NEOVERSE_V1",
+                        "baselines": {
+                            "latency": {
+                                "vmlinux-4.14.bin": {
+                                    "ubuntu-18.04.ext4": {
+                                        "1vcpu_1024mb.json": {
+                                            "Avg": {
+                                                "ping": {
+                                                    "target": 0.026,
+                                                    "delta_percentage": 23.1
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "vmlinux-5.10.bin": {
+                                    "ubuntu-18.04.ext4": {
+                                        "1vcpu_1024mb.json": {
+                                            "Avg": {
+                                                "ping": {
+                                                    "target": 0.036,
                                                     "delta_percentage": 12.1
                                                 }
                                             }

@@ -14,11 +14,12 @@ pub const TX_INDEX: usize = 1;
 
 pub mod device;
 pub mod event_handler;
+mod iovec;
 pub mod persist;
 mod tap;
 pub mod test_utils;
 
-pub use tap::Error as TapError;
+pub use tap::{Error as TapError, Tap};
 
 pub use self::device::Net;
 pub use self::event_handler::*;

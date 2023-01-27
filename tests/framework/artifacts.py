@@ -14,12 +14,33 @@ from pathlib import Path
 import boto3
 import botocore.client
 
-from framework.defs import DEFAULT_TEST_SESSION_ROOT_PATH, SUPPORTED_KERNELS
-from framework.utils import compare_versions
+from framework.defs import (
+    DEFAULT_TEST_SESSION_ROOT_PATH,
+    SUPPORTED_KERNELS,
+    SUPPORTED_KERNELS_NO_SVE,
+)
+from framework.utils import compare_versions, get_kernel_version
+from framework.utils_cpuid import get_instance_type
 from host_tools.snapshot_helper import merge_memory_bitmaps
 
-
 ARTIFACTS_LOCAL_ROOT = f"{DEFAULT_TEST_SESSION_ROOT_PATH}/ci-artifacts"
+
+
+def select_supported_kernels():
+    """Select kernels supported by the current combination of kernel and instance type."""
+    supported_kernels = SUPPORTED_KERNELS
+    kernel_version = get_kernel_version(level=1)
+    try:
+        instance_type = get_instance_type()
+    # in case we are not in EC2, return the default
+    # pylint: disable=broad-except
+    except Exception:
+        return supported_kernels
+
+    if instance_type == "c7g.metal" and kernel_version == "4.14":
+        supported_kernels = SUPPORTED_KERNELS_NO_SVE
+
+    return supported_kernels
 
 
 class ArtifactType(Enum):
@@ -93,11 +114,12 @@ class Artifact:
         """Save the artifact in the folder specified target_path."""
         assert self.bucket is not None
         self._local_folder = target_folder
-        Path(self.local_dir()).mkdir(parents=True, exist_ok=True)
-        if force or not os.path.exists(self.local_path()):
-            self._bucket.download_file(self._key, self.local_path())
+        local_path = Path(self.local_path())
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        if force or not local_path.exists():
+            self._bucket.download_file(self._key, local_path)
             # Artifacts are read-only by design.
-            os.chmod(self.local_path(), S_IREAD)
+            local_path.chmod(0o400)
 
     def local_path(self):
         """Return the local path where the file was downloaded."""
@@ -273,7 +295,12 @@ class DiskArtifact(Artifact):
         """Return a ssh key artifact."""
         # Replace extension.
         key_file_path = str(Path(self.key).with_suffix(".id_rsa"))
-        return Artifact(self.bucket, key_file_path, artifact_type=ArtifactType.SSH_KEY)
+        return Artifact(
+            self.bucket,
+            key_file_path,
+            artifact_type=ArtifactType.SSH_KEY,
+            local_folder=self._local_folder,
+        )
 
 
 class FirecrackerArtifact(Artifact):
@@ -457,11 +484,11 @@ class ArtifactCollection:
             keyword=keyword,
         )
 
-        valid_kernels = list(
-            filter(
-                lambda kernel: any(s in kernel.key for s in SUPPORTED_KERNELS), kernels
-            )
-        )
+        supported_kernels = {f"vmlinux-{sup}.bin" for sup in select_supported_kernels()}
+        valid_kernels = [
+            kernel for kernel in kernels if Path(kernel.key).name in supported_kernels
+        ]
+
         return valid_kernels
 
     def disks(self, keyword=None):
